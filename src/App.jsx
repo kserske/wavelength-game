@@ -24,7 +24,7 @@ const POLL_MS = 1500;
 const WIN_SCORE = 12;
 
 function randCode() { return Math.random().toString(36).slice(2,6).toUpperCase(); }
-function randTarget() { return 0.2 + Math.random() * 0.6; }
+function randTarget() { return parseFloat((0.2 + Math.random() * 0.6).toFixed(4)); }
 function randPair() { return CLUE_PAIRS[Math.floor(Math.random() * CLUE_PAIRS.length)]; }
 function scoreGuess(target, guess) {
   const d = Math.abs(target - guess);
@@ -34,7 +34,16 @@ function scoreGuess(target, guess) {
   return 0;
 }
 
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+// Get or create a stable player ID stored in localStorage
+function getMyId() {
+  let id = localStorage.getItem("wl_player_id");
+  if (!id) {
+    id = "u_" + Math.random().toString(36).slice(2, 8);
+    localStorage.setItem("wl_player_id", id);
+  }
+  return id;
+}
+
 const firebaseConfig = {
   apiKey: "AIzaSyDFSlbnBbHJ6M30RdO2gipyXTn2Tfdc2oM",
   authDomain: "wavelength-game-92b00.firebaseapp.com",
@@ -48,17 +57,18 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
+// Firestore cannot store undefined values — strip them out before saving
+function sanitize(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
+
 async function saveRoom(code, data) {
-  try {
-    await setDoc(doc(db, "rooms", code), data);
-  } catch(e){ console.error("saveRoom error", e); }
+  await setDoc(doc(db, "rooms", code), sanitize(data));
 }
 
 async function loadRoom(code) {
-  try {
-    const snap = await getDoc(doc(db, "rooms", code));
-    return snap.exists() ? snap.data() : null;
-  } catch(e){ console.error("loadRoom error", e); return null; }
+  const snap = await getDoc(doc(db, "rooms", code));
+  return snap.exists() ? snap.data() : null;
 }
 
 function posToAngle(pos) { return Math.PI - pos * Math.PI; }
@@ -80,7 +90,7 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair }) {
     const svgY = ((clientY - rect.top) / rect.height) * H;
     const angle = Math.atan2(cy - svgY, svgX - cx);
     const clamped = Math.max(0, Math.min(Math.PI, angle));
-    return 1 - clamped / Math.PI;
+    return parseFloat((1 - clamped / Math.PI).toFixed(4));
   }
 
   function handleDown(e) {
@@ -126,40 +136,25 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair }) {
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%"
         style={{ display:"block", cursor: interactive ? "crosshair" : "default", touchAction:"none", userSelect:"none" }}
         onMouseDown={handleDown} onTouchStart={handleDown}>
-
-        {/* Background track */}
         <path d={`M 14 ${cy} A ${R-14} ${R-14} 0 0 1 ${W-14} ${cy}`}
           fill="none" stroke="#f1f5f9" strokeWidth={22} strokeLinecap="round"/>
-
-        {/* Zone fills centered on target (only when target visible) */}
         {showTarget && [...ZONES].reverse().map((z,i) => (
           <path key={i} d={arcPath(target, z.half)} fill={z.color} opacity={0.25}/>
         ))}
-
-        {/* Track border */}
         <path d={`M 14 ${cy} A ${R-14} ${R-14} 0 0 1 ${W-14} ${cy}`}
           fill="none" stroke="#e2e8f0" strokeWidth={1}/>
-
-        {/* Target needle */}
         {showTarget && txy && (
           <g>
-            <line x1={cx} y1={cy} x2={txy.x} y2={txy.y}
-              stroke="#22c55e" strokeWidth={4} strokeLinecap="round"/>
+            <line x1={cx} y1={cy} x2={txy.x} y2={txy.y} stroke="#22c55e" strokeWidth={4} strokeLinecap="round"/>
             <circle cx={txy.x} cy={txy.y} r={10} fill="#22c55e" stroke="#fff" strokeWidth={2.5}/>
           </g>
         )}
-
-        {/* Guess needle */}
         <g>
-          <line x1={cx} y1={cy} x2={gxy.x} y2={gxy.y}
-            stroke="#6366f1" strokeWidth={5} strokeLinecap="round"/>
+          <line x1={cx} y1={cy} x2={gxy.x} y2={gxy.y} stroke="#6366f1" strokeWidth={5} strokeLinecap="round"/>
           <circle cx={gxy.x} cy={gxy.y} r={12} fill="#6366f1" stroke="#fff" strokeWidth={2.5}/>
         </g>
-
-        {/* Pivot */}
         <circle cx={cx} cy={cy} r={9} fill="#fff" stroke="#e2e8f0" strokeWidth={2}/>
       </svg>
-
       {showTarget && (
         <div style={{ display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap", marginTop:6 }}>
           {ZONES.filter(z=>z.pts>0).map(z=>(
@@ -217,7 +212,7 @@ function Scoreboard({ players, highlight }) {
 
 export default function App() {
   const [screen, setScreen] = useState("home");
-  const [myId] = useState(() => "u_" + Math.random().toString(36).slice(2,8));
+  const [myId] = useState(() => getMyId());
   const [myName, setMyName] = useState("");
   const [nameInput, setNameInput] = useState("");
   const [joinInput, setJoinInput] = useState("");
@@ -226,6 +221,7 @@ export default function App() {
   const [guess, setGuess] = useState(0.5);
   const [clueInput, setClueInput] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const pollRef = useRef(null);
 
@@ -237,8 +233,12 @@ export default function App() {
 
   const poll = useCallback(async () => {
     if (!roomCode) return;
-    const data = await loadRoom(roomCode);
-    if (data) setRoom(data);
+    try {
+      const data = await loadRoom(roomCode);
+      if (data) setRoom(data);
+    } catch(e) {
+      console.error("Poll error:", e);
+    }
   }, [roomCode]);
 
   useEffect(() => {
@@ -252,16 +252,34 @@ export default function App() {
   async function createRoom() {
     const name = nameInput.trim();
     if (!name) { setError("Enter your name first"); return; }
-    const code = randCode();
-    const newRoom = {
-      code, hostId: myId, psychicId: null,
-      phase: PHASE.LOBBY, pair: randPair(), target: randTarget(),
-      clue: "", guesses: {}, round: 1,
-      players: [{ id: myId, name, score: 0 }],
-    };
-    await saveRoom(code, newRoom);
-    setMyName(name); setRoomCode(code); setRoom(newRoom);
-    setScreen("room");
+    setLoading(true);
+    setError("");
+    try {
+      const code = randCode();
+      const newRoom = {
+        code,
+        hostId: myId,
+        psychicId: null,
+        phase: PHASE.LOBBY,
+        pair: randPair(),
+        target: randTarget(),
+        clue: "",
+        guesses: {},
+        round: 1,
+        players: [{ id: myId, name, score: 0 }],
+        winnerId: null,
+      };
+      await saveRoom(code, newRoom);
+      setMyName(name);
+      setRoomCode(code);
+      setRoom(newRoom);
+      setScreen("room");
+    } catch(e) {
+      console.error("createRoom error:", e);
+      setError("Failed to create room. Check your internet connection and try again.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function joinRoom() {
@@ -269,71 +287,112 @@ export default function App() {
     const code = joinInput.trim().toUpperCase();
     if (!name) { setError("Enter your name first"); return; }
     if (code.length !== 4) { setError("Enter a valid 4-letter room code"); return; }
-    const data = await loadRoom(code);
-    if (!data) { setError("Room not found — check the code"); return; }
-    if (data.phase !== PHASE.LOBBY) { setError("Game already started!"); return; }
-    if (!data.players.find(p => p.id === myId)) {
-      data.players.push({ id: myId, name, score: 0 });
-      await saveRoom(code, data);
+    setLoading(true);
+    setError("");
+    try {
+      const data = await loadRoom(code);
+      if (!data) { setError("Room not found — check the code"); setLoading(false); return; }
+      if (data.phase !== PHASE.LOBBY) { setError("Game already started!"); setLoading(false); return; }
+      if (!data.players.find(p => p.id === myId)) {
+        data.players.push({ id: myId, name, score: 0 });
+        await saveRoom(code, data);
+      }
+      setMyName(name);
+      setRoomCode(code);
+      setRoom(data);
+      setScreen("room");
+    } catch(e) {
+      console.error("joinRoom error:", e);
+      setError("Failed to join room. Check your internet connection and try again.");
+    } finally {
+      setLoading(false);
     }
-    setMyName(name); setRoomCode(code); setRoom(data);
-    setScreen("room");
   }
 
   async function startGame() {
     if (!room || room.players.length < 2) { setError("Need at least 2 players"); return; }
-    const data = await loadRoom(roomCode);
-    data.phase = PHASE.CLUE;
-    data.psychicId = data.players[0].id;
-    data.pair = randPair(); data.target = randTarget();
-    data.clue = ""; data.guesses = {};
-    await saveRoom(roomCode, data);
-    setRoom(data); setError("");
+    setError("");
+    try {
+      const data = await loadRoom(roomCode);
+      data.phase = PHASE.CLUE;
+      data.psychicId = data.players[0].id;
+      data.pair = randPair();
+      data.target = randTarget();
+      data.clue = "";
+      data.guesses = {};
+      await saveRoom(roomCode, data);
+      setRoom(data);
+    } catch(e) {
+      setError("Something went wrong. Try again.");
+    }
   }
 
   async function submitClue() {
     if (!clueInput.trim()) return;
-    const data = await loadRoom(roomCode);
-    data.clue = clueInput.trim();
-    data.phase = PHASE.GUESS;
-    await saveRoom(roomCode, data);
-    setRoom(data); setClueInput("");
+    try {
+      const data = await loadRoom(roomCode);
+      data.clue = clueInput.trim();
+      data.phase = PHASE.GUESS;
+      await saveRoom(roomCode, data);
+      setRoom(data);
+      setClueInput("");
+    } catch(e) {
+      setError("Failed to send clue. Try again.");
+    }
   }
 
   async function submitGuess() {
-    const data = await loadRoom(roomCode);
-    if (!data.guesses) data.guesses = {};
-    data.guesses[myId] = guess;
-    const nonPsychic = data.players.filter(p => p.id !== data.psychicId);
-    if (nonPsychic.every(p => data.guesses[p.id] !== undefined)) data.phase = PHASE.REVEAL;
-    await saveRoom(roomCode, data);
-    setRoom(data);
+    try {
+      const data = await loadRoom(roomCode);
+      if (!data.guesses) data.guesses = {};
+      data.guesses[myId] = guess;
+      const nonPsychic = data.players.filter(p => p.id !== data.psychicId);
+      if (nonPsychic.every(p => data.guesses[p.id] !== undefined)) data.phase = PHASE.REVEAL;
+      await saveRoom(roomCode, data);
+      setRoom(data);
+    } catch(e) {
+      setError("Failed to submit guess. Try again.");
+    }
   }
 
   async function nextRound() {
-    const data = await loadRoom(roomCode);
-    data.players.forEach(p => {
-      if (p.id === data.psychicId) return;
-      const g = data.guesses?.[p.id];
-      if (g !== undefined) p.score += scoreGuess(data.target, g);
-    });
-    const winner = data.players.find(p => p.score >= WIN_SCORE);
-    if (winner) {
-      data.phase = "winner"; data.winnerId = winner.id;
-      await saveRoom(roomCode, data); setRoom(data); return;
+    try {
+      const data = await loadRoom(roomCode);
+      data.players.forEach(p => {
+        if (p.id === data.psychicId) return;
+        const g = data.guesses?.[p.id];
+        if (g !== undefined) p.score += scoreGuess(data.target, g);
+      });
+      const winner = data.players.find(p => p.score >= WIN_SCORE);
+      if (winner) {
+        data.phase = "winner";
+        data.winnerId = winner.id;
+        await saveRoom(roomCode, data);
+        setRoom(data);
+        return;
+      }
+      const idx = data.players.findIndex(p => p.id === data.psychicId);
+      data.psychicId = data.players[(idx + 1) % data.players.length].id;
+      data.phase = PHASE.CLUE;
+      data.pair = randPair();
+      data.target = randTarget();
+      data.clue = "";
+      data.guesses = {};
+      data.round = (data.round || 1) + 1;
+      await saveRoom(roomCode, data);
+      setRoom(data);
+      setGuess(0.5);
+    } catch(e) {
+      setError("Failed to advance round. Try again.");
     }
-    const idx = data.players.findIndex(p => p.id === data.psychicId);
-    data.psychicId = data.players[(idx + 1) % data.players.length].id;
-    data.phase = PHASE.CLUE; data.pair = randPair(); data.target = randTarget();
-    data.clue = ""; data.guesses = {}; data.round = (data.round || 1) + 1;
-    await saveRoom(roomCode, data); setRoom(data); setGuess(0.5);
   }
 
   useEffect(() => { setGuess(0.5); }, [room?.round]);
 
   function copyCode() {
     navigator.clipboard?.writeText(roomCode).catch(()=>{});
-    setCopied(true); setTimeout(()=>setCopied(false), 2000);
+    setCopied(true);
+    setTimeout(()=>setCopied(false), 2000);
   }
 
   const inp = {
@@ -346,7 +405,7 @@ export default function App() {
     width:"100%", padding:"13px 0", borderRadius:10, border:"none",
     background: disabled?"#e2e8f0":bg, color: disabled?"#94a3b8":"#fff",
     fontSize:15, fontWeight:700, cursor: disabled?"not-allowed":"pointer",
-    fontFamily:"inherit", letterSpacing:.2
+    fontFamily:"inherit", letterSpacing:.2, opacity: loading ? 0.7 : 1
   });
 
   // ── Home ─────────────────────────────────────────────────────────────────────
@@ -365,8 +424,15 @@ export default function App() {
             placeholder="What do people call you?" style={inp}
             onKeyDown={e=>e.key==="Enter"&&createRoom()}/>
         </div>
-        {error && <p style={{ margin:0, color:"#ef4444", fontSize:13 }}>{error}</p>}
-        <button onClick={createRoom} style={btn()}>Create New Game</button>
+        {error && (
+          <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8,
+            padding:"10px 12px", fontSize:13, color:"#dc2626" }}>
+            ⚠️ {error}
+          </div>
+        )}
+        <button onClick={createRoom} disabled={loading} style={btn()}>
+          {loading ? "Creating..." : "Create New Game"}
+        </button>
         <div style={{ display:"flex", alignItems:"center", gap:10, margin:"2px 0" }}>
           <div style={{ flex:1, height:1, background:"#e2e8f0" }}/>
           <span style={{ color:"#cbd5e1", fontSize:12 }}>or join with a code</span>
@@ -376,7 +442,9 @@ export default function App() {
           placeholder="A B 3 X" maxLength={4}
           style={{ ...inp, textAlign:"center", fontFamily:"monospace", letterSpacing:6, fontSize:20, textTransform:"uppercase" }}
           onKeyDown={e=>e.key==="Enter"&&joinRoom()}/>
-        <button onClick={joinRoom} style={btn("#0f172a")}>Join Game</button>
+        <button onClick={joinRoom} disabled={loading} style={btn("#0f172a")}>
+          {loading ? "Joining..." : "Join Game"}
+        </button>
       </div>
     </div>
   );
@@ -449,11 +517,13 @@ export default function App() {
         <Scoreboard players={room.players} highlight={myId}/>
         {isHost && (
           <button onClick={async()=>{
-            const data = await loadRoom(roomCode);
-            data.phase = PHASE.LOBBY;
-            data.players.forEach(p=>p.score=0);
-            data.guesses={}; data.clue=""; data.round=1; data.psychicId=null;
-            await saveRoom(roomCode,data); setRoom(data);
+            try {
+              const data = await loadRoom(roomCode);
+              data.phase = PHASE.LOBBY;
+              data.players.forEach(p=>p.score=0);
+              data.guesses={}; data.clue=""; data.round=1; data.psychicId=null; data.winnerId=null;
+              await saveRoom(roomCode,data); setRoom(data);
+            } catch(e) { setError("Failed to restart. Try again."); }
           }} style={{ ...btn(), marginTop:20 }}>Play Again</button>
         )}
         {!isHost && <p style={{ marginTop:20, color:"#64748b", fontSize:13 }}>Waiting for host to restart...</p>}
@@ -464,7 +534,6 @@ export default function App() {
   // ── Game ──────────────────────────────────────────────────────────────────────
   return (
     <div style={{ maxWidth:460, margin:"0 auto", padding:"14px 16px 28px", fontFamily:"'Georgia',Georgia,serif" }}>
-      {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
         <span style={{ fontSize:12, color:"#94a3b8" }}>Round {room.round}</span>
         <div style={{ fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:99,
@@ -474,14 +543,11 @@ export default function App() {
         <span style={{ fontSize:12, color:"#94a3b8", fontFamily:"monospace", letterSpacing:1 }}>{roomCode}</span>
       </div>
 
-      {/* Scoreboard */}
       <div style={{ marginBottom:14 }}>
         <Scoreboard players={room.players} highlight={myId}/>
       </div>
 
-      {/* Dial card */}
       <div style={{ background:"#fff", border:"1.5px solid #e2e8f0", borderRadius:16, padding:"14px 12px", marginBottom:14 }}>
-        {/* Psychic target hint */}
         {isPsychic && room.phase === PHASE.CLUE && (
           <div style={{ marginBottom:12, padding:"10px 12px", background:"#fef3c7",
             borderRadius:10, border:"1px solid #fde68a" }}>
@@ -503,7 +569,6 @@ export default function App() {
             </div>
           </div>
         )}
-
         <Dial
           target={room.target}
           guess={isPsychic && room.phase === PHASE.CLUE ? room.target :
@@ -515,7 +580,13 @@ export default function App() {
         />
       </div>
 
-      {/* CLUE phase — psychic */}
+      {error && (
+        <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8,
+          padding:"10px 12px", fontSize:13, color:"#dc2626", marginBottom:12 }}>
+          ⚠️ {error}
+        </div>
+      )}
+
       {room.phase === PHASE.CLUE && isPsychic && (
         <div style={{ background:"#fafafa", border:"1.5px solid #e2e8f0", borderRadius:14, padding:16 }}>
           <p style={{ margin:"0 0 10px", fontSize:13, color:"#475569", lineHeight:1.5 }}>
@@ -531,7 +602,6 @@ export default function App() {
         </div>
       )}
 
-      {/* CLUE phase — waiting */}
       {room.phase === PHASE.CLUE && !isPsychic && (
         <div style={{ textAlign:"center", padding:"22px 0", color:"#64748b", fontSize:14 }}>
           <div style={{ fontSize:28, marginBottom:8 }}>⏳</div>
@@ -539,7 +609,6 @@ export default function App() {
         </div>
       )}
 
-      {/* GUESS phase */}
       {room.phase === PHASE.GUESS && (
         <div style={{ background:"#f8fafc", border:"1.5px solid #e2e8f0", borderRadius:14, padding:16 }}>
           <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:12, flexWrap:"wrap" }}>
@@ -580,7 +649,6 @@ export default function App() {
         </div>
       )}
 
-      {/* REVEAL phase */}
       {isRevealed && (
         <div style={{ border:"1.5px solid #e2e8f0", borderRadius:14, overflow:"hidden" }}>
           <div style={{ padding:"12px 16px", background:"#f8fafc", borderBottom:"1px solid #e2e8f0" }}>
