@@ -1,3 +1,5 @@
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const CLUE_PAIRS = [
@@ -32,14 +34,31 @@ function scoreGuess(target, guess) {
   return 0;
 }
 
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyDFSlbnBbHJ6M30RdO2gipyXTn2Tfdc2oM",
+  authDomain: "wavelength-game-92b00.firebaseapp.com",
+  projectId: "wavelength-game-92b00",
+  storageBucket: "wavelength-game-92b00.firebasestorage.app",
+  messagingSenderId: "779240323317",
+  appId: "1:779240323317:web:1b229c4383a6e55a97adbc",
+  measurementId: "G-1M028V46KC"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
 async function saveRoom(code, data) {
-  try { await window.storage.set(`wl_room_${code}`, JSON.stringify(data), true); } catch(e){}
+  try {
+    await setDoc(doc(db, "rooms", code), data);
+  } catch(e){ console.error("saveRoom error", e); }
 }
+
 async function loadRoom(code) {
   try {
-    const r = await window.storage.get(`wl_room_${code}`, true);
-    return r ? JSON.parse(r.value) : null;
-  } catch(e){ return null; }
+    const snap = await getDoc(doc(db, "rooms", code));
+    return snap.exists() ? snap.data() : null;
+  } catch(e){ console.error("loadRoom error", e); return null; }
 }
 
 function posToAngle(pos) { return Math.PI - pos * Math.PI; }
