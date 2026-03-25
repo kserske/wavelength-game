@@ -21,7 +21,7 @@ const ZONES = [
 
 const PHASE = { LOBBY:"lobby", CLUE:"clue", GUESS:"guess", REVEAL:"reveal" };
 const POLL_MS = 1500;
-const WIN_SCORE = 12;
+const ROUNDS_PER_PLAYER = 3; // each player gets 3 turns as Psychic
 
 function randCode() { return Math.random().toString(36).slice(2,6).toUpperCase(); }
 function randTarget() { return parseFloat((0.2 + Math.random() * 0.6).toFixed(4)); }
@@ -182,10 +182,11 @@ function Scoreboard({ players, highlight }) {
   return (
     <div style={{ background:"#f8fafc", borderRadius:12, border:"1px solid #e2e8f0", overflow:"hidden" }}>
       <div style={{ padding:"8px 14px", background:"#f1f5f9", borderBottom:"1px solid #e2e8f0" }}>
-        <span style={{ fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:1 }}>SCOREBOARD · first to {WIN_SCORE} wins</span>
+        <span style={{ fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:1 }}>SCOREBOARD</span>
       </div>
       {sorted.map((p,i) => {
-        const pct = Math.min(100, (p.score / WIN_SCORE) * 100);
+        const maxScore = players.reduce((m, pl) => Math.max(m, pl.score), 1);
+        const pct = Math.min(100, (p.score / maxScore) * 100);
         return (
           <div key={p.id} style={{
             padding:"8px 14px", borderBottom: i<sorted.length-1?"1px solid #f1f5f9":"none",
@@ -320,6 +321,8 @@ export default function App() {
       data.target = randTarget();
       data.clue = "";
       data.guesses = {};
+      data.round = 1;
+      data.totalRounds = data.players.length * ROUNDS_PER_PLAYER;
       await saveRoom(roomCode, data);
       setRoom(data);
     } catch(e) {
@@ -358,19 +361,30 @@ export default function App() {
   async function nextRound() {
     try {
       const data = await loadRoom(roomCode);
+
+      // Score all guessers for this round
       data.players.forEach(p => {
         if (p.id === data.psychicId) return;
         const g = data.guesses?.[p.id];
         if (g !== undefined) p.score += scoreGuess(data.target, g);
       });
-      const winner = data.players.find(p => p.score >= WIN_SCORE);
-      if (winner) {
+
+      const totalRounds = data.players.length * ROUNDS_PER_PLAYER;
+      const currentRound = data.round || 1;
+
+      // Game over when all rounds are done
+      if (currentRound >= totalRounds) {
+        // Find winner — highest score (ties: earliest in player list wins)
+        const winner = [...data.players].sort((a, b) => b.score - a.score)[0];
         data.phase = "winner";
         data.winnerId = winner.id;
+        data.totalRounds = totalRounds;
         await saveRoom(roomCode, data);
         setRoom(data);
         return;
       }
+
+      // Rotate psychic
       const idx = data.players.findIndex(p => p.id === data.psychicId);
       data.psychicId = data.players[(idx + 1) % data.players.length].id;
       data.phase = PHASE.CLUE;
@@ -378,7 +392,8 @@ export default function App() {
       data.target = randTarget();
       data.clue = "";
       data.guesses = {};
-      data.round = (data.round || 1) + 1;
+      data.round = currentRound + 1;
+      data.totalRounds = totalRounds;
       await saveRoom(roomCode, data);
       setRoom(data);
       setGuess(0.5);
@@ -508,12 +523,27 @@ export default function App() {
   // ── Winner ────────────────────────────────────────────────────────────────────
   if (room.phase === "winner") {
     const w = room.players.find(p => p.id === room.winnerId);
+    const topScore = Math.max(...room.players.map(p => p.score));
+    const tied = room.players.filter(p => p.score === topScore);
     return (
       <div style={{ maxWidth:400, margin:"0 auto", padding:"40px 18px",
         fontFamily:"'Georgia',Georgia,serif", textAlign:"center" }}>
         <div style={{ fontSize:52, marginBottom:10 }}>🎉</div>
-        <h2 style={{ margin:"0 0 4px", fontSize:26, color:"#0f172a" }}>{w?.name} wins!</h2>
-        <p style={{ color:"#64748b", marginBottom:24, fontSize:14 }}>First to {WIN_SCORE} points</p>
+        {tied.length > 1 ? (
+          <>
+            <h2 style={{ margin:"0 0 4px", fontSize:26, color:"#0f172a" }}>It's a tie!</h2>
+            <p style={{ color:"#64748b", marginBottom:24, fontSize:14 }}>
+              {tied.map(p => p.name).join(" & ")} both scored {topScore} pts
+            </p>
+          </>
+        ) : (
+          <>
+            <h2 style={{ margin:"0 0 4px", fontSize:26, color:"#0f172a" }}>{w?.name} wins!</h2>
+            <p style={{ color:"#64748b", marginBottom:24, fontSize:14 }}>
+              Highest score after {room.totalRounds} rounds
+            </p>
+          </>
+        )}
         <Scoreboard players={room.players} highlight={myId}/>
         {isHost && (
           <button onClick={async()=>{
@@ -521,7 +551,8 @@ export default function App() {
               const data = await loadRoom(roomCode);
               data.phase = PHASE.LOBBY;
               data.players.forEach(p=>p.score=0);
-              data.guesses={}; data.clue=""; data.round=1; data.psychicId=null; data.winnerId=null;
+              data.guesses={}; data.clue=""; data.round=1;
+              data.psychicId=null; data.winnerId=null; data.totalRounds=null;
               await saveRoom(roomCode,data); setRoom(data);
             } catch(e) { setError("Failed to restart. Try again."); }
           }} style={{ ...btn(), marginTop:20 }}>Play Again</button>
@@ -535,7 +566,7 @@ export default function App() {
   return (
     <div style={{ maxWidth:460, margin:"0 auto", padding:"14px 16px 28px", fontFamily:"'Georgia',Georgia,serif" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
-        <span style={{ fontSize:12, color:"#94a3b8" }}>Round {room.round}</span>
+        <span style={{ fontSize:12, color:"#94a3b8" }}>Round {room.round} of {room.totalRounds || "?"}</span>
         <div style={{ fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:99,
           background: isPsychic?"#fef3c7":"#ede9fe", color: isPsychic?"#92400e":"#4f46e5" }}>
           {isPsychic ? "🧠 You're the Psychic" : `🧠 ${psychicPlayer?.name} is Psychic`}
