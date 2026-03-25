@@ -71,14 +71,38 @@ async function loadRoom(code) {
   return snap.exists() ? snap.data() : null;
 }
 
+// Convert 0–1 position on spectrum to SVG angle in radians
+// pos=0 → left (π), pos=1 → right (0)
 function posToAngle(pos) { return Math.PI - pos * Math.PI; }
 function posToXY(pos, cx, cy, r) {
   const a = posToAngle(pos);
   return { x: cx + r * Math.cos(a), y: cy - r * Math.sin(a) };
 }
 
+// Build a filled pie-wedge path between two 0–1 positions, at radius r from centre
+function wedgePath(posA, posB, cx, cy, rOuter, rInner = 0) {
+  const a1 = posToAngle(Math.min(posA, posB));
+  const a2 = posToAngle(Math.max(posA, posB));
+  // outer arc goes from a2 → a1 (left sweep on SVG = counter-clockwise drawn right→left)
+  const ox1 = cx + rOuter * Math.cos(a2), oy1 = cy - rOuter * Math.sin(a2);
+  const ox2 = cx + rOuter * Math.cos(a1), oy2 = cy - rOuter * Math.sin(a1);
+  const large = Math.abs(posA - posB) > 0.5 ? 1 : 0;
+  if (rInner <= 0) {
+    return `M ${cx} ${cy} L ${ox1} ${oy1} A ${rOuter} ${rOuter} 0 ${large} 1 ${ox2} ${oy2} Z`;
+  }
+  const ix1 = cx + rInner * Math.cos(a1), iy1 = cy - rInner * Math.sin(a1);
+  const ix2 = cx + rInner * Math.cos(a2), iy2 = cy - rInner * Math.sin(a2);
+  return [
+    `M ${ox1} ${oy1}`,
+    `A ${rOuter} ${rOuter} 0 ${large} 1 ${ox2} ${oy2}`,
+    `L ${ix1} ${iy1}`,
+    `A ${rInner} ${rInner} 0 ${large} 0 ${ix2} ${iy2}`,
+    `Z`
+  ].join(" ");
+}
+
 function Dial({ target, guess, showTarget, onGuessChange, interactive, pair }) {
-  const W = 400, H = 215, cx = 200, cy = 215, R = 190;
+  const W = 440, H = 240, cx = 220, cy = 232, R = 210, Rinner = 100;
   const svgRef = useRef(null);
   const dragging = useRef(false);
 
@@ -114,65 +138,148 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair }) {
     };
   }, [interactive, onGuessChange]);
 
-  function arcPath(center, halfW) {
-    const lo = Math.max(0.001, center - halfW);
-    const hi = Math.min(0.999, center + halfW);
-    const aHi = posToAngle(lo), aLo = posToAngle(hi);
-    const x1 = cx + R * Math.cos(aHi), y1 = cy - R * Math.sin(aHi);
-    const x2 = cx + R * Math.cos(aLo), y2 = cy - R * Math.sin(aLo);
-    const large = (hi - lo) > 0.5 ? 1 : 0;
-    return `M ${cx} ${cy} L ${x1} ${y1} A ${R} ${R} 0 ${large} 0 ${x2} ${y2} Z`;
+  // The scoring zones are defined by half-widths around the target centre (0–1 space).
+  // We build 7 contiguous segments that tile the full 0→1 spectrum:
+  //   grey | red | orange | yellow-green | GREEN (4pt) | yellow-green | orange | red | grey
+  // Bands (cumulative half-widths from ZONES constant):
+  //   4pt zone : ±0.06  around target
+  //   3pt zone : ±0.12  (from 0.06 to 0.12 on each side)
+  //   2pt zone : ±0.20  (from 0.12 to 0.20 on each side)
+  //   0pt grey : rest
+  //
+  // We compute absolute boundary positions then generate segments left→right.
+  function buildSegments(t) {
+    // boundaries in 0–1 space, clamped
+    const clamp = v => Math.max(0, Math.min(1, v));
+    const b = [
+      0,
+      clamp(t - 0.20), // outer edge of 2pt left
+      clamp(t - 0.12), // outer edge of 3pt left
+      clamp(t - 0.06), // outer edge of 4pt left
+      clamp(t + 0.06), // outer edge of 4pt right
+      clamp(t + 0.12), // outer edge of 3pt right
+      clamp(t + 0.20), // outer edge of 2pt right
+      1,
+    ];
+    // Colours for each of the 7 gaps between 8 boundaries
+    const colors = [
+      "#d1d5db", // 0pt left grey
+      "#f59e0b", // 2pt left orange
+      "#84cc16", // 3pt left yellow-green
+      "#22c55e", // 4pt green centre
+      "#84cc16", // 3pt right yellow-green
+      "#f59e0b", // 2pt right orange
+      "#d1d5db", // 0pt right grey
+    ];
+    const labels = [null, "2pt", "3pt", "4pt", "3pt", "2pt", null];
+    return b.slice(0,-1).map((start, i) => ({
+      start, end: b[i+1], color: colors[i], label: labels[i]
+    })).filter(s => s.end > s.start);
   }
 
-  const gxy = posToXY(guess, cx, cy, R - 12);
-  const txy = showTarget ? posToXY(target, cx, cy, R - 12) : null;
+  const segments = buildSegments(showTarget ? target : 0.5);
+  // When target is hidden, show uniform grey
+  const displaySegments = showTarget
+    ? segments
+    : [{ start: 0, end: 1, color: "#d1d5db", label: null }];
+
+  const gxy = posToXY(guess, cx, cy, (R + Rinner) / 2);
+  const txy = showTarget ? posToXY(target, cx, cy, R - 8) : null;
+  const needleEnd = posToXY(guess, cx, cy, R - 8);
+
+  // Label positions — midpoint of each scored segment, placed at 80% radius
+  function segMid(seg) {
+    const mid = (seg.start + seg.end) / 2;
+    return posToXY(mid, cx, cy, (R + Rinner) / 2 + 6);
+  }
 
   return (
     <div>
-      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, padding:"0 4px" }}>
-        <span style={{ fontSize:13, fontWeight:700, color:"#3b82f6", letterSpacing:.3 }}>{pair[0]}</span>
-        <span style={{ fontSize:13, fontWeight:700, color:"#f43f5e", letterSpacing:.3 }}>{pair[1]}</span>
+      {/* Spectrum labels */}
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, padding:"0 6px" }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#3b82f6" }}>{pair[0]}</span>
+        <span style={{ fontSize:13, fontWeight:700, color:"#f43f5e" }}>{pair[1]}</span>
       </div>
+
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%"
-        style={{ display:"block", cursor: interactive ? "crosshair" : "default", touchAction:"none", userSelect:"none" }}
+        style={{ display:"block", cursor: interactive ? "crosshair" : "default", touchAction:"none", userSelect:"none", overflow:"visible" }}
         onMouseDown={handleDown} onTouchStart={handleDown}>
-        <path d={`M 14 ${cy} A ${R-14} ${R-14} 0 0 1 ${W-14} ${cy}`}
-          fill="none" stroke="#f1f5f9" strokeWidth={22} strokeLinecap="round"/>
-        {showTarget && [...ZONES].reverse().map((z,i) => (
-          <path key={i} d={arcPath(target, z.half)} fill={z.color} opacity={0.25}/>
+
+        {/* Pie wedge segments — always visible */}
+        {displaySegments.map((seg, i) => (
+          <path key={i}
+            d={wedgePath(seg.start, seg.end, cx, cy, R, Rinner)}
+            fill={seg.color}
+            stroke="#fff"
+            strokeWidth={1.5}
+          />
         ))}
-        <path d={`M 14 ${cy} A ${R-14} ${R-14} 0 0 1 ${W-14} ${cy}`}
-          fill="none" stroke="#e2e8f0" strokeWidth={1}/>
+
+        {/* Point labels inside the coloured bands */}
+        {showTarget && segments.filter(s => s.label).map((seg, i) => {
+          const mp = segMid(seg);
+          return (
+            <text key={i} x={mp.x} y={mp.y}
+              textAnchor="middle" dominantBaseline="middle"
+              fontSize={10} fontWeight="700" fill="#fff" opacity={0.9}
+              style={{ pointerEvents:"none", userSelect:"none" }}>
+              {seg.label}
+            </text>
+          );
+        })}
+
+        {/* Outer arc border */}
+        <path d={`M ${posToXY(0,cx,cy,R).x} ${posToXY(0,cx,cy,R).y} A ${R} ${R} 0 0 1 ${posToXY(1,cx,cy,R).x} ${posToXY(1,cx,cy,R).y}`}
+          fill="none" stroke="#fff" strokeWidth={2}/>
+        {/* Inner arc border */}
+        <path d={`M ${posToXY(0,cx,cy,Rinner).x} ${posToXY(0,cx,cy,Rinner).y} A ${Rinner} ${Rinner} 0 0 1 ${posToXY(1,cx,cy,Rinner).x} ${posToXY(1,cx,cy,Rinner).y}`}
+          fill="none" stroke="#fff" strokeWidth={2}/>
+
+        {/* Target needle — shown after reveal */}
         {showTarget && txy && (
           <g>
-            <line x1={cx} y1={cy} x2={txy.x} y2={txy.y} stroke="#22c55e" strokeWidth={4} strokeLinecap="round"/>
-            <circle cx={txy.x} cy={txy.y} r={10} fill="#22c55e" stroke="#fff" strokeWidth={2.5}/>
+            <line x1={cx} y1={cy} x2={txy.x} y2={txy.y}
+              stroke="#15803d" strokeWidth={3} strokeLinecap="round" strokeDasharray="4 3"/>
+            <circle cx={txy.x} cy={txy.y} r={7} fill="#15803d" stroke="#fff" strokeWidth={2}/>
           </g>
         )}
+
+        {/* Guess needle */}
         <g>
-          <line x1={cx} y1={cy} x2={gxy.x} y2={gxy.y} stroke="#6366f1" strokeWidth={5} strokeLinecap="round"/>
-          <circle cx={gxy.x} cy={gxy.y} r={12} fill="#6366f1" stroke="#fff" strokeWidth={2.5}/>
+          <line x1={cx} y1={cy} x2={needleEnd.x} y2={needleEnd.y}
+            stroke="#6366f1" strokeWidth={4} strokeLinecap="round"/>
+          <circle cx={needleEnd.x} cy={needleEnd.y} r={10} fill="#6366f1" stroke="#fff" strokeWidth={2.5}/>
         </g>
-        <circle cx={cx} cy={cy} r={9} fill="#fff" stroke="#e2e8f0" strokeWidth={2}/>
+
+        {/* Pivot cover */}
+        <circle cx={cx} cy={cy} r={Rinner - 2} fill="#fff"/>
+        <circle cx={cx} cy={cy} r={10} fill="#e2e8f0" stroke="#fff" strokeWidth={2}/>
       </svg>
-      {showTarget && (
-        <div style={{ display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap", marginTop:6 }}>
-          {ZONES.filter(z=>z.pts>0).map(z=>(
-            <div key={z.pts} style={{ display:"flex", alignItems:"center", gap:3, fontSize:11 }}>
-              <div style={{ width:9, height:9, borderRadius:2, background:z.color, opacity:.8 }}/>
-              <span style={{ color:"#94a3b8" }}>{z.pts}pt</span>
-            </div>
-          ))}
-          <div style={{ display:"flex", alignItems:"center", gap:3, fontSize:11 }}>
-            <div style={{ width:9, height:9, borderRadius:"50%", background:"#22c55e" }}/>
-            <span style={{ color:"#94a3b8" }}>target</span>
+
+      {/* Legend */}
+      <div style={{ display:"flex", gap:10, justifyContent:"center", flexWrap:"wrap", marginTop:4 }}>
+        {[
+          { color:"#22c55e", label:"4 pts" },
+          { color:"#84cc16", label:"3 pts" },
+          { color:"#f59e0b", label:"2 pts" },
+          { color:"#d1d5db", label:"0 pts" },
+        ].map(item => (
+          <div key={item.label} style={{ display:"flex", alignItems:"center", gap:4, fontSize:11 }}>
+            <div style={{ width:10, height:10, borderRadius:2, background:item.color, border:"1px solid #e2e8f0" }}/>
+            <span style={{ color:"#64748b" }}>{item.label}</span>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:3, fontSize:11 }}>
-            <div style={{ width:9, height:9, borderRadius:"50%", background:"#6366f1" }}/>
-            <span style={{ color:"#94a3b8" }}>guess</span>
+        ))}
+        {showTarget && (
+          <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:11 }}>
+            <div style={{ width:10, height:10, borderRadius:"50%", background:"#15803d" }}/>
+            <span style={{ color:"#64748b" }}>target</span>
           </div>
+        )}
+        <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:11 }}>
+          <div style={{ width:10, height:10, borderRadius:"50%", background:"#6366f1" }}/>
+          <span style={{ color:"#64748b" }}>your guess</span>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -586,7 +693,7 @@ export default function App() {
               🎯 TARGET — only you see this
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div style={{ flex:1, height:8, background:"#fde68a", borderRadius:99, overflow:"hidden" }}>
+              <div style={{ flex:1, height:8, background:"#e2e8f0", borderRadius:99, overflow:"hidden" }}>
                 <div style={{ height:"100%", width:`${room.target*100}%`, background:"#22c55e", borderRadius:99 }}/>
               </div>
               <strong style={{ fontSize:14, color:"#065f46", minWidth:36 }}>{Math.round(room.target*100)}%</strong>
