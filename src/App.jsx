@@ -71,69 +71,181 @@ async function loadRoom(code) {
   return snap.exists() ? snap.data() : null;
 }
 
-// SVG semicircle geometry helpers
-// pos=0 → left (180°), pos=1 → right (0°)
-// The semicircle arc goes left→right across the top.
-// In SVG coordinates (y down), a point at angle θ from centre is:
-//   x = cx + r·cos(θ),  y = cy - r·sin(θ)
-// pos maps to θ = π·(1-pos), so pos=0 → θ=π (left), pos=1 → θ=0 (right)
-function pToXY(pos, cx, cy, r) {
-  const a = Math.PI * (1 - pos);
-  return [cx + r * Math.cos(a), cy - r * Math.sin(a)];
-}
+// 12 distinct player colours for reveal needles
+const PLAYER_COLORS = [
+  "#6366f1","#f43f5e","#f59e0b","#10b981","#3b82f6","#8b5cf6",
+  "#ec4899","#14b8a6","#f97316","#06b6d4","#84cc16","#e11d48"
+];
 
-// Returns SVG path for an annular arc segment (donut slice) from pos0 to pos1.
-// Uses stroke-based approach: we draw a thick circular arc as a stroked path,
-// which is 100% reliable and needs zero wedge-path math.
-// strokeWidth should equal (rOuter - rInner), centred at (rOuter+rInner)/2.
-function arcSegPath(pos0, pos1, cx, cy, r) {
-  const [x0, y0] = pToXY(pos0, cx, cy, r);
-  const [x1, y1] = pToXY(pos1, cx, cy, r);
-  const span = pos1 - pos0;
-  const large = span > 0.5 ? 1 : 0;
-  // sweep=0: arc goes counter-clockwise in angle (pos increases = angle decreases = visually left→right)
-  return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 0 ${x1} ${y1}`;
-}
-
-function buildSegments(target) {
-  const t = Math.max(0.001, Math.min(0.999, target));
-  const b = [
-    0,
-    Math.max(0.001, t - 0.20),
-    Math.max(0.001, t - 0.12),
-    Math.max(0.001, t - 0.06),
-    Math.min(0.999, t + 0.06),
-    Math.min(0.999, t + 0.12),
-    Math.min(0.999, t + 0.20),
-    1,
-  ];
-  const colors = ["#d1d5db","#f59e0b","#84cc16","#22c55e","#84cc16","#f59e0b","#d1d5db"];
-  const labels = [null, "2", "3", "4", "3", "2", null];
-  return b.slice(0,-1).map((start, i) => ({
-    start, end: b[i+1], color: colors[i], label: labels[i],
-  })).filter(s => s.end - s.start > 0.001);
-}
-
-function Dial({ target, guess, showTarget, onGuessChange, interactive, pair }) {
-  // Layout: viewBox 400×220, pivot at bottom-centre (200, 210)
-  // Outer radius 180, inner radius 100 → stroke width 80, centred at r=140
-  const W = 400, H = 210;
-  const cx = 200, cy = 210;
-  const Ro = 185, Ri = 105;       // outer / inner radii of the donut band
-  const Rm = (Ro + Ri) / 2;       // mid-radius for stroked arcs = 145
-  const SW = Ro - Ri;             // stroke width = 80
-
-  const svgRef = useRef(null);
+function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, allGuesses, players, myId: dialMyId }) {
+  const canvasRef = useRef(null);
   const dragging = useRef(false);
 
+  // Canvas dimensions
+  const CW = 400, CH = 220;
+  const cx = 200, cy = 218;   // pivot: bottom-centre
+  const Ro = 195, Ri = 108;   // outer/inner radius of the donut band
+
+  // pos 0 = left (angle=π), pos 1 = right (angle=0)
+  // canvas angles: 0=right, π=left, measured counter-clockwise from positive-x axis
+  // but canvas arc() goes clockwise, so we use:
+  //   startAngle = π (left), endAngle = 0 (right), anticlockwise = true
+  // pos → canvas angle = π*(1-pos)  [0→π, 1→0]
+  function posToAngle(pos) { return Math.PI * (1 - pos); }
+  function posToXY(pos, r) {
+    const a = posToAngle(pos);
+    return [cx + r * Math.cos(a), cy - r * Math.sin(a)];
+  }
+
+  // Draw one annular segment from pos0 to pos1 in a given fill color
+  function drawSegment(ctx, pos0, pos1, color) {
+    const a0 = posToAngle(pos0); // start angle (left boundary)
+    const a1 = posToAngle(pos1); // end angle (right boundary)
+    // a0 > a1 always (since pos0 < pos1 → a0 > a1)
+    // Canvas arc anticlockwise=true goes from a0 down to a1 (i.e. left→right visually)
+    ctx.beginPath();
+    ctx.arc(cx, cy, Ro, a0, a1, true);  // outer arc, left→right
+    ctx.arc(cx, cy, Ri, a1, a0, false); // inner arc, right→left (closes shape)
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // Draw a needle from pivot to the arc band, with a dot at the tip
+  function drawNeedle(ctx, pos, color, width, dashPattern) {
+    const [tx, ty] = posToXY(pos, Ro - 6);
+    ctx.save();
+    ctx.beginPath();
+    ctx.setLineDash(dashPattern || []);
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(tx, ty);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = "round";
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Dot at tip
+    ctx.beginPath();
+    ctx.arc(tx, ty, width + 3, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(tx, ty, width + 1, 0, Math.PI * 2);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, CW, CH);
+
+    if (showTarget) {
+      // ── Coloured scoring zones centred on target ──
+      const t = target;
+      const segs = [
+        [0,             Math.max(0.0001, t-0.20), "#d1d5db"],
+        [Math.max(0.0001,t-0.20), Math.max(0.0001,t-0.12), "#f59e0b"],
+        [Math.max(0.0001,t-0.12), Math.max(0.0001,t-0.06), "#84cc16"],
+        [Math.max(0.0001,t-0.06), Math.min(0.9999,t+0.06), "#22c55e"],
+        [Math.min(0.9999,t+0.06), Math.min(0.9999,t+0.12), "#84cc16"],
+        [Math.min(0.9999,t+0.12), Math.min(0.9999,t+0.20), "#f59e0b"],
+        [Math.min(0.9999,t+0.20), 1,                        "#d1d5db"],
+      ];
+      segs.forEach(([p0, p1, col]) => {
+        if (p1 > p0) drawSegment(ctx, p0, p1, col);
+      });
+
+      // White divider lines at segment boundaries
+      const dividers = [t-0.20, t-0.12, t-0.06, t+0.06, t+0.12, t+0.20]
+        .filter(v => v > 0.001 && v < 0.999);
+      dividers.forEach(pos => {
+        const [x0, y0] = posToXY(pos, Ri - 2);
+        const [x1, y1] = posToXY(pos, Ro + 2);
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+
+      // Pt labels inside each scoring band
+      const labelSegs = [
+        [t-0.20, t-0.12, "2pt"],
+        [t-0.12, t-0.06, "3pt"],
+        [t-0.06, t+0.06, "4pt"],
+        [t+0.06, t+0.12, "3pt"],
+        [t+0.12, t+0.20, "2pt"],
+      ];
+      ctx.font = "bold 11px Georgia, serif";
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      labelSegs.forEach(([p0, p1, label]) => {
+        const mid = Math.max(0.001, Math.min(0.999, (p0 + p1) / 2));
+        if (p1 > p0 && p1 > 0.001 && p0 < 0.999) {
+          const [lx, ly] = posToXY(mid, (Ro + Ri) / 2);
+          ctx.fillText(label, lx, ly);
+        }
+      });
+
+      // ── Reveal mode: draw each player's guess needle in their colour ──
+      if (allGuesses && players) {
+        const guessers = players.filter(p => allGuesses[p.id] !== undefined);
+        guessers.forEach((p, i) => {
+          const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
+          drawNeedle(ctx, allGuesses[p.id], color, 3, []);
+        });
+      } else {
+        // Psychic view — just show target needle (dashed green)
+        drawNeedle(ctx, target, "#15803d", 3, [6, 4]);
+      }
+
+    } else {
+      // ── Guesser view: full grey semicircle ──
+      drawSegment(ctx, 0, 1, "#d1d5db");
+
+      // Guess needle on top
+      drawNeedle(ctx, guess, "#6366f1", 4, []);
+    }
+
+    // White inner circle to clean up pivot area
+    ctx.beginPath();
+    ctx.arc(cx, cy, Ri - 1, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+
+    // Outer + inner border arcs
+    [Ro, Ri].forEach(r => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, Math.PI, 0, true);
+      ctx.strokeStyle = "#cbd5e1";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    });
+
+    // Pivot dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+    ctx.fillStyle = "#e2e8f0";
+    ctx.fill();
+
+  }, [target, guess, showTarget, allGuesses, players]);
+
+  // Pointer interaction
   function getPos(e) {
-    const rect = svgRef.current.getBoundingClientRect();
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    const svgX = ((clientX - rect.left) / rect.width) * W;
-    const svgY = ((clientY - rect.top) / rect.height) * H;
-    const a = Math.atan2(cy - svgY, svgX - cx);
-    return parseFloat((1 - Math.max(0, Math.min(Math.PI, a)) / Math.PI).toFixed(4));
+    const x = ((clientX - rect.left) / rect.width) * CW;
+    const y = ((clientY - rect.top) / rect.height) * CH;
+    const angle = Math.atan2(cy - y, x - cx);
+    return parseFloat((1 - Math.max(0, Math.min(Math.PI, angle)) / Math.PI).toFixed(4));
   }
 
   function handleDown(e) {
@@ -157,113 +269,46 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair }) {
     };
   }, [interactive, onGuessChange]);
 
-  // Guesser (hidden target): show a gradient grey→white→grey so needle is visible against background
-  // Psychic / reveal: show coloured scoring zones
-  const segments = showTarget
-    ? buildSegments(target)
-    : [{ start: 0, end: 1, color: "#cbd5e1", label: null }];
-
-  // Needle endpoints
-  const [nx, ny] = pToXY(guess, cx, cy, Ro - 4);
-  const [tx, ty] = showTarget ? pToXY(target, cx, cy, Ro - 4) : [];
-
-  // Label position: midpoint of band, at mid-radius
-  function labelPos(seg) {
-    return pToXY((seg.start + seg.end) / 2, cx, cy, Rm);
-  }
-
   return (
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, padding:"0 4px" }}>
         <span style={{ fontSize:14, fontWeight:700, color:"#3b82f6" }}>{pair[0]}</span>
         <span style={{ fontSize:14, fontWeight:700, color:"#f43f5e" }}>{pair[1]}</span>
       </div>
-
-      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%"
-        style={{ display:"block", cursor: interactive ? "crosshair" : "default",
-          touchAction:"none", userSelect:"none", overflow:"visible" }}
-        onMouseDown={handleDown} onTouchStart={handleDown}>
-
-        {/* ── Donut band: each segment is a thick stroked arc ── */}
-        {segments.map((seg, i) => (
-          <path key={i}
-            d={arcSegPath(seg.start, seg.end, cx, cy, Rm)}
-            fill="none"
-            stroke={seg.color}
-            strokeWidth={SW}
-            strokeLinecap="butt"
-          />
-        ))}
-
-        {/* ── White divider lines between segments (drawn as radial lines) ── */}
-        {showTarget && buildSegments(target).map((seg, i) => {
-          const [lx0, ly0] = pToXY(seg.start, cx, cy, Ri - 1);
-          const [lx1, ly1] = pToXY(seg.start, cx, cy, Ro + 1);
-          return i === 0 ? null : (
-            <line key={i} x1={lx0} y1={ly0} x2={lx1} y2={ly1}
-              stroke="#fff" strokeWidth={2}/>
-          );
-        })}
-
-        {/* ── Pt labels inside each coloured band ── */}
-        {showTarget && buildSegments(target).filter(s => s.label).map((seg, i) => {
-          const [lx, ly] = labelPos(seg);
-          return (
-            <text key={i} x={lx} y={ly}
-              textAnchor="middle" dominantBaseline="middle"
-              fontSize={12} fontWeight="800" fill="#fff"
-              style={{ pointerEvents:"none" }}>
-              {seg.label}pt
-            </text>
-          );
-        })}
-
-        {/* ── Outer + inner border arcs for clean edges ── */}
-        <path d={arcSegPath(0, 1, cx, cy, Ro)} fill="none" stroke="#e2e8f0" strokeWidth={1.5} strokeLinecap="butt"/>
-        <path d={arcSegPath(0, 1, cx, cy, Ri)} fill="none" stroke="#e2e8f0" strokeWidth={1.5} strokeLinecap="butt"/>
-
-        {/* ── Target needle (green dashed) — psychic + reveal only ── */}
-        {showTarget && (
-          <g>
-            <line x1={cx} y1={cy} x2={tx} y2={ty}
-              stroke="#15803d" strokeWidth={3} strokeLinecap="round" strokeDasharray="6 4"/>
-            <circle cx={tx} cy={ty} r={7} fill="#15803d" stroke="#fff" strokeWidth={2}/>
-          </g>
-        )}
-
-        {/* ── Guess needle (indigo) — always shown ── */}
-        <line x1={cx} y1={cy} x2={nx} y2={ny}
-          stroke="#6366f1" strokeWidth={5} strokeLinecap="round"/>
-        <circle cx={nx} cy={ny} r={10} fill="#6366f1" stroke="#fff" strokeWidth={2.5}/>
-
-        {/* ── White fill covers inner circle so needle starts cleanly ── */}
-        <circle cx={cx} cy={cy} r={Ri - 1} fill="#fff"/>
-        <circle cx={cx} cy={cy} r={8} fill="#e2e8f0"/>
-      </svg>
+      <canvas ref={canvasRef} width={CW} height={CH}
+        style={{ display:"block", width:"100%", cursor: interactive ? "crosshair" : "default",
+          touchAction:"none" }}
+        onMouseDown={handleDown} onTouchStart={handleDown}
+      />
 
       {/* Legend */}
-      <div style={{ display:"flex", gap:10, justifyContent:"center", flexWrap:"wrap", marginTop:8 }}>
-        {[
-          { color:"#22c55e", label:"4 pts" },
-          { color:"#84cc16", label:"3 pts" },
-          { color:"#f59e0b", label:"2 pts" },
-          { color:"#d1d5db", label:"0 pts" },
+      <div style={{ display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap", marginTop:8 }}>
+        {showTarget && [
+          { color:"#22c55e", label:"4pt" },
+          { color:"#84cc16", label:"3pt" },
+          { color:"#f59e0b", label:"2pt" },
+          { color:"#d1d5db", label:"0pt" },
         ].map(item => (
-          <div key={item.label} style={{ display:"flex", alignItems:"center", gap:4, fontSize:11 }}>
+          <div key={item.label} style={{ display:"flex", alignItems:"center", gap:3, fontSize:11 }}>
             <div style={{ width:10, height:10, borderRadius:2, background:item.color, border:"1px solid #e2e8f0" }}/>
             <span style={{ color:"#64748b" }}>{item.label}</span>
           </div>
         ))}
-        {showTarget && (
-          <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:11 }}>
-            <div style={{ width:10, height:10, borderRadius:"50%", background:"#15803d" }}/>
-            <span style={{ color:"#64748b" }}>target</span>
+        {/* Player needle legend on reveal */}
+        {allGuesses && players && players.filter(p => allGuesses[p.id] !== undefined).map((p, i) => (
+          <div key={p.id} style={{ display:"flex", alignItems:"center", gap:3, fontSize:11 }}>
+            <div style={{ width:10, height:10, borderRadius:"50%", background: PLAYER_COLORS[i % PLAYER_COLORS.length] }}/>
+            <span style={{ color: p.id === dialMyId ? "#1e293b" : "#64748b", fontWeight: p.id === dialMyId ? 700 : 400 }}>
+              {p.name}{p.id === dialMyId ? " (you)" : ""}
+            </span>
+          </div>
+        ))}
+        {!allGuesses && !showTarget && (
+          <div style={{ display:"flex", alignItems:"center", gap:3, fontSize:11 }}>
+            <div style={{ width:10, height:10, borderRadius:"50%", background:"#6366f1" }}/>
+            <span style={{ color:"#64748b" }}>your guess</span>
           </div>
         )}
-        <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:11 }}>
-          <div style={{ width:10, height:10, borderRadius:"50%", background:"#6366f1" }}/>
-          <span style={{ color:"#64748b" }}>your guess</span>
-        </div>
       </div>
     </div>
   );
@@ -700,6 +745,9 @@ export default function App() {
           onGuessChange={setGuess}
           interactive={!isPsychic && room.phase === PHASE.GUESS && myGuessVal === undefined}
           pair={room.pair}
+          allGuesses={isRevealed ? room.guesses : null}
+          players={isRevealed ? room.players.filter(p => p.id !== room.psychicId) : null}
+          myId={myId}
         />
       </div>
 
