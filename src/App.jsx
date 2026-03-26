@@ -10,6 +10,9 @@ const CLUE_PAIRS = [
   ["Serious","Funny"],["Realistic","Fantastical"],["Healthy","Unhealthy"],
   ["Abstract","Concrete"],["Dull","Vibrant"],["Fragile","Sturdy"],
   ["Pessimistic","Optimistic"],["Fictional","Real"],["Relaxing","Stressful"],
+  ["Useful Tech","Useless Tech"],["Sweet","Sour"],["Quiet","Loud"],
+  ["Clean","Dirty"],["Hero","Villain"],["Rough","Smooth"],["Short","Long"],
+  ["Wet","Dry"],["Inflexible","Flexible"],
 ];
 
 const ZONES = [
@@ -21,7 +24,7 @@ const ZONES = [
 
 const PHASE = { LOBBY:"lobby", CLUE:"clue", GUESS:"guess", REVEAL:"reveal" };
 const POLL_MS = 1500;
-const ROUNDS_PER_PLAYER = 3; // each player gets 3 turns as Psychic
+const ROUNDS_PER_PLAYER = 2; // each player gets 2 turns as Psychic
 
 function randCode() { return Math.random().toString(36).slice(2,6).toUpperCase(); }
 function randTarget() { return parseFloat((0.2 + Math.random() * 0.6).toFixed(4)); }
