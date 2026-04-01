@@ -3,7 +3,7 @@ import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const CLUE_PAIRS = [
-  ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
+    ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
   ["Cheap","Expensive"],["Boring","Exciting"],["Tiny","Massive"],["Dark","Bright"],
   ["Slow","Fast"],["Bad","Good"],["Ancient","Modern"],["Silent","Deafening"],
   ["Soft","Hard"],["Safe","Dangerous"],["Natural","Artificial"],["Common","Rare"],
@@ -12,7 +12,7 @@ const CLUE_PAIRS = [
   ["Pessimistic","Optimistic"],["Fictional","Real"],["Relaxing","Stressful"],
   ["Useful Tech","Useless Tech"],["Sweet","Sour"],["Quiet","Loud"],
   ["Clean","Dirty"],["Hero","Villain"],["Rough","Smooth"],["Short","Long"],
-  ["Wet","Dry"],["Inflexible","Flexible"],
+  ["Wet","Dry"],["Inflexible","Flexible"]
 ];
 
 const ZONES = [
@@ -24,10 +24,10 @@ const ZONES = [
 
 const PHASE = { LOBBY:"lobby", CLUE:"clue", GUESS:"guess", REVEAL:"reveal" };
 const POLL_MS = 1500;
-const ROUNDS_PER_PLAYER = 2; // each player gets 2 turns as Psychic
+const ROUNDS_PER_PLAYER = 3; // each player gets 3 turns as Psychic
 
 function randCode() { return Math.random().toString(36).slice(2,6).toUpperCase(); }
-function randTarget() { return parseFloat((0.2 + Math.random() * 0.6).toFixed(4)); }
+function randTarget() { return parseFloat((Math.random()).toFixed(4)); }
 function randPair() { return CLUE_PAIRS[Math.floor(Math.random() * CLUE_PAIRS.length)]; }
 function scoreGuess(target, guess) {
   const d = Math.abs(target - guess);
@@ -82,45 +82,57 @@ const PLAYER_COLORS = [
 
 function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, allGuesses, players, myId: dialMyId }) {
   const canvasRef = useRef(null);
-  const dragging = useRef(false);
+  const dragging  = useRef(false);
 
   const CW = 400, CH = 220;
   const cx = 200, cy = 218;
-  const Ro = 195, Ri = 108;
+  const Ro = 192, Ri = 108;
 
-  // pos 0 = left (π), pos 1 = right (0)
-  // canvas angle for a position: a = π - pos*π  → pos=0 gives π, pos=1 gives 0
-  function posToA(pos) { return Math.PI - pos * Math.PI; }
-  function posToXY(pos, r) {
-    const a = posToA(pos);
+  // Canvas angle for spectrum position: pos=0 → π (left), pos=1 → 0 (right)
+  function posA(pos) { return Math.PI * (1 - pos); }
+  function posXY(pos, r) {
+    const a = posA(pos);
     return [cx + r * Math.cos(a), cy - r * Math.sin(a)];
   }
 
-  // Draw an annular wedge from pos0 to pos1 (both 0–1, pos0 < pos1).
-  // The top semicircle goes from angle π (left) down to 0 (right) in canvas terms.
-  // ctx.arc(x,y,r, startAngle, endAngle, anticlockwise):
-  //   clockwise (false): angle increases (goes "down-right" from left side)
-  //   anticlockwise (true): angle decreases (goes "up-left" from right side)
-  // For pos0→pos1 (left to right), angles go from posToA(pos0) DOWN to posToA(pos1).
-  // posToA(pos0) > posToA(pos1) since pos0 < pos1.
-  // Clockwise arc from posToA(pos0) to posToA(pos1) traces the TOP of the circle ✓
-  function drawSegment(ctx, pos0, pos1, color) {
+  // Draw a donut wedge from pos0→pos1 using the clip trick:
+  // 1. Save context, set clip to a pie-slice shape (or top-half rect for full arc)
+  // 2. Draw two full circles (outer - inner) filled with evenodd rule
+  // 3. Restore — zero arc direction ambiguity
+  function drawBand(ctx, pos0, pos1, color) {
     if (pos1 <= pos0) return;
-    const aStart = posToA(pos0); // larger angle, left side
-    const aEnd   = posToA(pos1); // smaller angle, right side
+    ctx.save();
     ctx.beginPath();
-    // Outer arc: clockwise from aStart → aEnd (traces top-left to top-right)
-    ctx.arc(cx, cy, Ro, aStart, aEnd, false);
-    // Inner arc: anticlockwise from aEnd → aStart (traces back right to left)
-    ctx.arc(cx, cy, Ri, aEnd, aStart, true);
-    ctx.closePath();
+    if (pos1 - pos0 >= 0.999) {
+      // Full semicircle: clip to rectangle covering the top half
+      ctx.rect(cx - Ro - 5, cy - Ro - 5, (Ro + 5) * 2, Ro + 5);
+    } else {
+      // Wedge clip: pivot → left edge → arc → right edge → close
+      const [lx, ly] = posXY(pos0, Ro + 5);
+      const [rx, ry] = posXY(pos1, Ro + 5);
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(lx, ly);
+      // clockwise arc from posA(pos0) to posA(pos1):
+      // posA(pos0) > posA(pos1) (since pos0 < pos1), so going clockwise (false)
+      // sweeps from the LEFT boundary DOWN to the RIGHT boundary — correct ✓
+      ctx.arc(cx, cy, Ro + 5, posA(pos0), posA(pos1), false);
+      ctx.lineTo(cx, cy);
+    }
+    ctx.clip();
+
+    // Paint the full donut ring; clip does the wedge masking
+    ctx.beginPath();
+    ctx.arc(cx, cy, Ro, 0, Math.PI * 2, false); // outer circle CW
+    ctx.arc(cx, cy, Ri, 0, Math.PI * 2, true);  // inner circle CCW → creates hole
     ctx.fillStyle = color;
     ctx.fill();
+    ctx.restore();
   }
 
-  function drawNeedle(ctx, pos, color, width) {
-    const [tx, ty] = posToXY(pos, Ro - 8);
+  function drawNeedle(ctx, pos, color, width, dashed) {
+    const [tx, ty] = posXY(pos, Ro - 6);
     ctx.save();
+    if (dashed) ctx.setLineDash([6, 4]);
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.lineTo(tx, ty);
@@ -128,7 +140,7 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, all
     ctx.lineWidth = width;
     ctx.lineCap = "round";
     ctx.stroke();
-    // tip circle
+    ctx.setLineDash([]);
     ctx.beginPath();
     ctx.arc(tx, ty, width + 3, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -148,97 +160,73 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, all
     ctx.clearRect(0, 0, CW, CH);
 
     if (showTarget) {
-      // Coloured scoring zones centred on target
-      const t = Math.max(0.001, Math.min(0.999, target));
-      const segs = [
-        [0,              Math.max(0.001, t-0.20), "#d1d5db"],
-        [Math.max(0.001,t-0.20), Math.max(0.001,t-0.12), "#f59e0b"],
-        [Math.max(0.001,t-0.12), Math.max(0.001,t-0.06), "#84cc16"],
-        [Math.max(0.001,t-0.06), Math.min(0.999,t+0.06), "#22c55e"],
-        [Math.min(0.999,t+0.06), Math.min(0.999,t+0.12), "#84cc16"],
-        [Math.min(0.999,t+0.12), Math.min(0.999,t+0.20), "#f59e0b"],
-        [Math.min(0.999,t+0.20), 1,                       "#d1d5db"],
-      ];
-      segs.forEach(([p0, p1, col]) => drawSegment(ctx, p0, p1, col));
+      const t = Math.max(0, Math.min(1, target));
+      // Compute zone boundaries (clamped to [0,1])
+      const lo4 = Math.max(0, t - 0.06), hi4 = Math.min(1, t + 0.06);
+      const lo3 = Math.max(0, t - 0.12), hi3 = Math.min(1, t + 0.12);
+      const lo2 = Math.max(0, t - 0.20), hi2 = Math.min(1, t + 0.20);
 
-      // White dividers at zone boundaries
-      [t-0.20, t-0.12, t-0.06, t+0.06, t+0.12, t+0.20]
-        .filter(v => v > 0.002 && v < 0.998)
+      // Draw widest first, narrowest last — each layer paints over the previous
+      drawBand(ctx, 0,   1,   "#d1d5db"); // 0pt grey  (full ring)
+      drawBand(ctx, lo2, hi2, "#f59e0b"); // 2pt orange
+      drawBand(ctx, lo3, hi3, "#84cc16"); // 3pt yellow-green
+      drawBand(ctx, lo4, hi4, "#22c55e"); // 4pt green  (innermost)
+
+      // White dividers at boundaries that are inside [0.01, 0.99]
+      [lo2, lo3, lo4, hi4, hi3, hi2]
+        .filter(v => v > 0.01 && v < 0.99)
         .forEach(pos => {
-          const [x0, y0] = posToXY(pos, Ri - 2);
-          const [x1, y1] = posToXY(pos, Ro + 2);
+          const [x0, y0] = posXY(pos, Ri - 2);
+          const [x1, y1] = posXY(pos, Ro + 2);
           ctx.beginPath();
           ctx.moveTo(x0, y0);
           ctx.lineTo(x1, y1);
           ctx.strokeStyle = "#fff";
-          ctx.lineWidth = 2.5;
+          ctx.lineWidth = 2;
           ctx.stroke();
         });
 
-      // Labels inside scoring bands
+      // Pt labels at midpoint of each visible band
+      const Rm = (Ro + Ri) / 2;
       ctx.font = "bold 11px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      const Rm = (Ro + Ri) / 2;
+      ctx.fillStyle = "#fff";
       [
-        [t-0.20, t-0.12, "2pt"],
-        [t-0.12, t-0.06, "3pt"],
-        [t-0.06, t+0.06, "4pt"],
-        [t+0.06, t+0.12, "3pt"],
-        [t+0.12, t+0.20, "2pt"],
+        [lo2, lo3, "2pt"], [lo3, lo4, "3pt"],
+        [lo4, hi4, "4pt"],
+        [hi4, hi3, "3pt"], [hi3, hi2, "2pt"],
       ].forEach(([p0, p1, label]) => {
-        const mid = (p0 + p1) / 2;
-        if (p1 > p0 && mid > 0.001 && mid < 0.999) {
-          const [lx, ly] = posToXY(mid, Rm);
-          ctx.fillStyle = "#fff";
+        if (p1 - p0 > 0.015) {
+          const [lx, ly] = posXY((p0 + p1) / 2, Rm);
           ctx.fillText(label, lx, ly);
         }
       });
 
       // Needles
       if (allGuesses && players) {
-        // Reveal: one needle per guesser in their player colour
         players
           .filter(p => allGuesses[p.id] !== undefined)
-          .forEach((p, i) => drawNeedle(ctx, allGuesses[p.id], PLAYER_COLORS[i % PLAYER_COLORS.length], 3));
+          .forEach((p, i) =>
+            drawNeedle(ctx, allGuesses[p.id], PLAYER_COLORS[i % PLAYER_COLORS.length], 3, false)
+          );
       } else {
-        // Psychic view: dashed target needle
-        const [tx2, ty2] = posToXY(target, Ro - 8);
-        ctx.save();
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(tx2, ty2);
-        ctx.strokeStyle = "#15803d";
-        ctx.lineWidth = 3;
-        ctx.lineCap = "round";
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.arc(tx2, ty2, 7, 0, Math.PI * 2);
-        ctx.fillStyle = "#15803d";
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(tx2, ty2, 5, 0, Math.PI * 2);
-        ctx.strokeStyle = "#fff";
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.restore();
+        drawNeedle(ctx, target, "#15803d", 3, true);
       }
 
     } else {
-      // Guesser view: full grey semicircle + indigo needle
-      drawSegment(ctx, 0, 1, "#d1d5db");
-      drawNeedle(ctx, guess, "#6366f1", 4);
+      // Guesser: plain grey ring + indigo needle
+      drawBand(ctx, 0, 1, "#d1d5db");
+      drawNeedle(ctx, guess, "#6366f1", 4, false);
     }
 
-    // White inner disc hides pivot
+    // White inner disc hides pivot area
     ctx.beginPath();
     ctx.arc(cx, cy, Ri - 1, 0, Math.PI * 2);
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = "#fff";
     ctx.fill();
 
-    // Border arcs (top semicircle only)
+    // Thin border arcs (top half only)
     ctx.beginPath();
     ctx.arc(cx, cy, Ro, Math.PI, 0, false);
     ctx.strokeStyle = "#cbd5e1";
@@ -259,12 +247,11 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, all
   }, [target, guess, showTarget, allGuesses, players]);
 
   function getPos(e) {
-    const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    const x = ((clientX - rect.left) / rect.width) * CW;
-    const y = ((clientY - rect.top) / rect.height) * CH;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const ex = e.touches ? e.touches[0].clientX : e.clientX;
+    const ey = e.touches ? e.touches[0].clientY : e.clientY;
+    const x = ((ex - rect.left) / rect.width) * CW;
+    const y = ((ey - rect.top) / rect.height) * CH;
     const angle = Math.atan2(cy - y, x - cx);
     return parseFloat((1 - Math.max(0, Math.min(Math.PI, angle)) / Math.PI).toFixed(4));
   }
@@ -300,7 +287,6 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, all
         style={{ display:"block", width:"100%", cursor: interactive ? "crosshair" : "default", touchAction:"none" }}
         onMouseDown={handleDown} onTouchStart={handleDown}
       />
-      {/* Legend */}
       <div style={{ display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap", marginTop:8 }}>
         {showTarget && [
           { color:"#22c55e", label:"4pt" },
@@ -517,12 +503,23 @@ export default function App() {
     try {
       const data = await loadRoom(roomCode);
 
-      // Score all guessers for this round
+      // Score guessers
+      let psychicBonus = 0;
       data.players.forEach(p => {
         if (p.id === data.psychicId) return;
         const g = data.guesses?.[p.id];
-        if (g !== undefined) p.score += scoreGuess(data.target, g);
+        if (g !== undefined) {
+          const s = scoreGuess(data.target, g);
+          p.score += s;
+          // Psychic earns bonus for each guesser: 4pt→3pts, 3pt→2pts, 2pt→1pt
+          if (s === 4) psychicBonus += 3;
+          else if (s === 3) psychicBonus += 2;
+          else if (s === 2) psychicBonus += 1;
+        }
       });
+      // Award psychic their bonus
+      const psychic = data.players.find(p => p.id === data.psychicId);
+      if (psychic) psychic.score += psychicBonus;
 
       const totalRounds = data.players.length * ROUNDS_PER_PLAYER;
       const currentRound = data.round || 1;
