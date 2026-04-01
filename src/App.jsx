@@ -13,9 +13,9 @@ const CLUE_PAIRS = [
 ];
 
 const ZONES = [
-  { pts: 4, half: 0.06, color: "#22c55e" },
-  { pts: 3, half: 0.12, color: "#84cc16" },
-  { pts: 2, half: 0.20, color: "#f59e0b" },
+  { pts: 4, half: 0.03, color: "#22c55e" },
+  { pts: 3, half: 0.09, color: "#84cc16" },
+  { pts: 2, half: 0.17, color: "#f59e0b" },
   { pts: 0, half: 0.50, color: "#ef4444" },
 ];
 
@@ -156,9 +156,9 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, all
     if (showTarget) {
       const t = Math.max(0, Math.min(1, target));
       // Compute zone boundaries (clamped to [0,1])
-      const lo4 = Math.max(0, t - 0.06), hi4 = Math.min(1, t + 0.06);
-      const lo3 = Math.max(0, t - 0.12), hi3 = Math.min(1, t + 0.12);
-      const lo2 = Math.max(0, t - 0.20), hi2 = Math.min(1, t + 0.20);
+      const lo4 = Math.max(0, t - 0.03), hi4 = Math.min(1, t + 0.03);
+      const lo3 = Math.max(0, t - 0.09), hi3 = Math.min(1, t + 0.09);
+      const lo2 = Math.max(0, t - 0.17), hi2 = Math.min(1, t + 0.17);
 
       // Draw widest first, narrowest last — each layer paints over the previous
       drawBand(ctx, 0,   1,   "#d1d5db"); // 0pt grey  (full ring)
@@ -604,6 +604,12 @@ export default function App() {
         <button onClick={joinRoom} disabled={loading} style={btn("#0f172a")}>
           {loading ? "Joining..." : "Join Game"}
         </button>
+        <div style={{ textAlign:"center", marginTop:16 }}>
+          <a href="https://www.youtube.com/c/Kserske" target="_blank" rel="noopener noreferrer"
+            style={{ fontSize:12, color:"#94a3b8", textDecoration:"none" }}>
+            Created by Kserske ↗
+          </a>
+        </div>
       </div>
     </div>
   );
