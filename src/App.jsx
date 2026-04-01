@@ -3,16 +3,13 @@ import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const CLUE_PAIRS = [
-    ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
+  ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
   ["Cheap","Expensive"],["Boring","Exciting"],["Tiny","Massive"],["Dark","Bright"],
   ["Slow","Fast"],["Bad","Good"],["Ancient","Modern"],["Silent","Deafening"],
   ["Soft","Hard"],["Safe","Dangerous"],["Natural","Artificial"],["Common","Rare"],
   ["Serious","Funny"],["Realistic","Fantastical"],["Healthy","Unhealthy"],
   ["Abstract","Concrete"],["Dull","Vibrant"],["Fragile","Sturdy"],
   ["Pessimistic","Optimistic"],["Fictional","Real"],["Relaxing","Stressful"],
-  ["Useful Tech","Useless Tech"],["Sweet","Sour"],["Quiet","Loud"],
-  ["Clean","Dirty"],["Hero","Villain"],["Rough","Smooth"],["Short","Long"],
-  ["Wet","Dry"],["Inflexible","Flexible"]
 ];
 
 const ZONES = [
@@ -104,28 +101,25 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, all
     ctx.save();
     ctx.beginPath();
     if (pos1 - pos0 >= 0.999) {
-      // Full semicircle: clip to rectangle covering the top half
-      ctx.rect(cx - Ro - 5, cy - Ro - 5, (Ro + 5) * 2, Ro + 5);
+      // Full semicircle: clip rect covers exactly the top half of the canvas
+      ctx.rect(0, 0, CW, cy);
     } else {
-      // Wedge clip: pivot → left edge → arc → right edge → close
+      // Wedge clip from pivot through pos0 arc to pos1
       const [lx, ly] = posXY(pos0, Ro + 5);
-      const [rx, ry] = posXY(pos1, Ro + 5);
       ctx.moveTo(cx, cy);
       ctx.lineTo(lx, ly);
-      // clockwise arc from posA(pos0) to posA(pos1):
-      // posA(pos0) > posA(pos1) (since pos0 < pos1), so going clockwise (false)
-      // sweeps from the LEFT boundary DOWN to the RIGHT boundary — correct ✓
+      // posA(pos0) > posA(pos1) — clockwise sweep traces the TOP arc correctly
       ctx.arc(cx, cy, Ro + 5, posA(pos0), posA(pos1), false);
       ctx.lineTo(cx, cy);
     }
     ctx.clip();
 
-    // Paint the full donut ring; clip does the wedge masking
+    // Donut ring: outer CW + inner CCW → evenodd fills ring only
     ctx.beginPath();
-    ctx.arc(cx, cy, Ro, 0, Math.PI * 2, false); // outer circle CW
-    ctx.arc(cx, cy, Ri, 0, Math.PI * 2, true);  // inner circle CCW → creates hole
+    ctx.arc(cx, cy, Ro, 0, Math.PI * 2, false);
+    ctx.arc(cx, cy, Ri, 0, Math.PI * 2, true);
     ctx.fillStyle = color;
-    ctx.fill();
+    ctx.fill("evenodd");  // ← evenodd is essential: makes inner circle a hole
     ctx.restore();
   }
 
@@ -503,21 +497,19 @@ export default function App() {
     try {
       const data = await loadRoom(roomCode);
 
-      // Score guessers
-      let psychicBonus = 0;
+      // Score guessers and track highest score achieved
+      let highestGuesserScore = 0;
       data.players.forEach(p => {
         if (p.id === data.psychicId) return;
         const g = data.guesses?.[p.id];
         if (g !== undefined) {
           const s = scoreGuess(data.target, g);
           p.score += s;
-          // Psychic earns bonus for each guesser: 4pt→3pts, 3pt→2pts, 2pt→1pt
-          if (s === 4) psychicBonus += 3;
-          else if (s === 3) psychicBonus += 2;
-          else if (s === 2) psychicBonus += 1;
+          if (s > highestGuesserScore) highestGuesserScore = s;
         }
       });
-      // Award psychic their bonus
+      // Psychic earns (highest guesser score - 1), awarded once, minimum 0
+      const psychicBonus = Math.max(0, highestGuesserScore - 1);
       const psychic = data.players.find(p => p.id === data.psychicId);
       if (psychic) psychic.score += psychicBonus;
 
