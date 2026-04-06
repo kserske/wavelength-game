@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, updateDoc, arrayUnion } from "firebase/firestore";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const CLUE_PAIRS = [
@@ -312,6 +312,46 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, all
   );
 }
 
+function Timer({ deadline, onExpire, warning = 10 }) {
+  const [secs, setSecs] = useState(null);
+
+  useEffect(() => {
+    if (!deadline) return;
+    function tick() {
+      const remaining = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      setSecs(remaining);
+      if (remaining === 0 && onExpire) onExpire();
+    }
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [deadline]);
+
+  if (secs === null || !deadline) return null;
+
+  const mins = Math.floor(secs / 60);
+  const s = secs % 60;
+  const label = `${mins}:${String(s).padStart(2, "0")}`;
+  const isWarning = secs <= warning;
+  const isUrgent  = secs <= 5;
+
+  return (
+    <div style={{
+      display:"inline-flex", alignItems:"center", gap:5,
+      padding:"4px 12px", borderRadius:99,
+      background: isUrgent ? "#fef2f2" : isWarning ? "#fef9c3" : "#f0fdf4",
+      border: `1.5px solid ${isUrgent ? "#fca5a5" : isWarning ? "#fde047" : "#bbf7d0"}`,
+      fontSize:13, fontWeight:700,
+      color: isUrgent ? "#dc2626" : isWarning ? "#a16207" : "#15803d",
+      animation: isUrgent ? "pulse 0.7s ease-in-out infinite" : "none",
+    }}>
+      <span style={{ fontSize:11 }}>⏱</span>
+      {label}
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }`}</style>
+    </div>
+  );
+}
+
 function Scoreboard({ players, highlight }) {
   const sorted = [...players].sort((a,b) => b.score - a.score);
   return (
@@ -428,11 +468,33 @@ export default function App() {
     try {
       const data = await loadRoom(code);
       if (!data) { setError("Room not found — check the code"); setLoading(false); return; }
-      if (data.phase !== PHASE.LOBBY) { setError("Game already started!"); setLoading(false); return; }
-      if (!data.players.find(p => p.id === myId)) {
-        data.players.push({ id: myId, name, score: 0 });
+
+      const existing = data.players.find(p => p.id === myId);
+      if (existing) {
+        // Rejoin: update name, use full setDoc since we have the latest data
+        existing.name = name;
         await saveRoom(code, data);
+      } else if (data.phase !== PHASE.LOBBY) {
+        // Not in the room and game already started — check if same name exists (reconnect by name)
+        const sameNamePlayer = data.players.find(p => p.name.toLowerCase() === name.toLowerCase());
+        if (sameNamePlayer) {
+          sameNamePlayer.id = myId;
+          localStorage.setItem("wl_player_id", myId);
+          await saveRoom(code, data);
+        } else {
+          setError("Game already started — you can only rejoin with your original name.");
+          setLoading(false); return;
+        }
+      } else {
+        // New player joining lobby — use arrayUnion to atomically add without overwriting others
+        await updateDoc(doc(db, "rooms", code), {
+          players: arrayUnion({ id: myId, name, score: 0 })
+        });
+        // Re-fetch so we have the merged player list
+        const fresh = await loadRoom(code);
+        if (fresh) { setMyName(name); setRoomCode(code); setRoom(fresh); setScreen("room"); setLoading(false); return; }
       }
+
       setMyName(name);
       setRoomCode(code);
       setRoom(data);
@@ -458,6 +520,7 @@ export default function App() {
       data.guesses = {};
       data.round = 1;
       data.totalRounds = data.players.length * ROUNDS_PER_PLAYER;
+      data.phaseDeadline = Date.now() + 90000; // 90s for psychic
       await saveRoom(roomCode, data);
       setRoom(data);
     } catch(e) {
@@ -471,6 +534,7 @@ export default function App() {
       const data = await loadRoom(roomCode);
       data.clue = clueInput.trim();
       data.phase = PHASE.GUESS;
+      data.phaseDeadline = Date.now() + 45000; // 45s for guessers
       await saveRoom(roomCode, data);
       setRoom(data);
       setClueInput("");
@@ -538,6 +602,7 @@ export default function App() {
       data.guesses = {};
       data.round = currentRound + 1;
       data.totalRounds = totalRounds;
+      data.phaseDeadline = Date.now() + 90000; // 90s for next psychic
       await saveRoom(roomCode, data);
       setRoom(data);
       setGuess(0.5);
@@ -713,6 +778,32 @@ export default function App() {
   }
 
   // ── Game ──────────────────────────────────────────────────────────────────────
+  // Auto-submit clue on timeout (psychic only)
+  const clueTimedOut = useRef(false);
+  const guessTimedOut = useRef(false);
+
+  function handleClueTimeout() {
+    if (clueTimedOut.current || !isPsychic || room.phase !== PHASE.CLUE) return;
+    clueTimedOut.current = true;
+    // Submit whatever is typed, or a placeholder
+    const fallback = clueInput.trim() || "…";
+    loadRoom(roomCode).then(data => {
+      data.clue = fallback;
+      data.phase = PHASE.GUESS;
+      data.phaseDeadline = Date.now() + 45000;
+      return saveRoom(roomCode, data);
+    }).then(() => poll()).catch(()=>{});
+  }
+
+  function handleGuessTimeout() {
+    if (guessTimedOut.current || isPsychic || room.phase !== PHASE.GUESS || myGuessVal !== undefined) return;
+    guessTimedOut.current = true;
+    submitGuess();
+  }
+
+  // Reset timeout guards when phase changes
+  useEffect(() => { clueTimedOut.current = false; guessTimedOut.current = false; }, [room?.phase, room?.round]);
+
   return (
     <div style={{ maxWidth:460, margin:"0 auto", padding:"14px 16px 28px", fontFamily:"'Georgia',Georgia,serif" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
@@ -721,7 +812,15 @@ export default function App() {
           background: isPsychic?"#fef3c7":"#ede9fe", color: isPsychic?"#92400e":"#4f46e5" }}>
           {isPsychic ? "🧠 You're the Psychic" : `🧠 ${psychicPlayer?.name} is Psychic`}
         </div>
-        <span style={{ fontSize:12, color:"#94a3b8", fontFamily:"monospace", letterSpacing:1 }}>{roomCode}</span>
+        {room.phaseDeadline && (room.phase === PHASE.CLUE || room.phase === PHASE.GUESS) ? (
+          <Timer
+            deadline={room.phaseDeadline}
+            warning={15}
+            onExpire={room.phase === PHASE.CLUE ? handleClueTimeout : handleGuessTimeout}
+          />
+        ) : (
+          <span style={{ fontSize:12, color:"#94a3b8", fontFamily:"monospace", letterSpacing:1 }}>{roomCode}</span>
+        )}
       </div>
 
       <div style={{ marginBottom:14 }}>
