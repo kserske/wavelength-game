@@ -400,6 +400,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const pollRef = useRef(null);
+  // These MUST be here at the top — hooks cannot be called after conditional returns
+  const clueTimedOut = useRef(false);
+  const guessTimedOut = useRef(false);
 
   const isHost = room?.hostId === myId;
   const isPsychic = room?.psychicId === myId;
@@ -424,6 +427,12 @@ export default function App() {
       return () => clearInterval(pollRef.current);
     }
   }, [screen, poll]);
+
+  // Reset timeout guards whenever the phase or round changes
+  useEffect(() => {
+    clueTimedOut.current = false;
+    guessTimedOut.current = false;
+  }, [room?.phase, room?.round]);
 
   async function createRoom() {
     const name = nameInput.trim();
@@ -778,21 +787,16 @@ export default function App() {
   }
 
   // ── Game ──────────────────────────────────────────────────────────────────────
-  // Auto-submit clue on timeout (psychic only)
-  const clueTimedOut = useRef(false);
-  const guessTimedOut = useRef(false);
-
   function handleClueTimeout() {
     if (clueTimedOut.current || !isPsychic || room.phase !== PHASE.CLUE) return;
     clueTimedOut.current = true;
-    // Submit whatever is typed, or a placeholder
     const fallback = clueInput.trim() || "…";
     loadRoom(roomCode).then(data => {
       data.clue = fallback;
       data.phase = PHASE.GUESS;
       data.phaseDeadline = Date.now() + 45000;
       return saveRoom(roomCode, data);
-    }).then(() => poll()).catch(()=>{});
+    }).then(() => poll()).catch(() => {});
   }
 
   function handleGuessTimeout() {
@@ -801,25 +805,26 @@ export default function App() {
     submitGuess();
   }
 
-  // Reset timeout guards when phase changes
-  useEffect(() => { clueTimedOut.current = false; guessTimedOut.current = false; }, [room?.phase, room?.round]);
-
   return (
     <div style={{ maxWidth:460, margin:"0 auto", padding:"14px 16px 28px", fontFamily:"'Georgia',Georgia,serif" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+      {/* Header row */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
         <span style={{ fontSize:12, color:"#94a3b8" }}>Round {room.round} of {room.totalRounds || "?"}</span>
-        <div style={{ fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:99,
-          background: isPsychic?"#fef3c7":"#ede9fe", color: isPsychic?"#92400e":"#4f46e5" }}>
+        <span style={{ fontSize:12, color:"#94a3b8", fontFamily:"monospace", letterSpacing:1 }}>{roomCode}</span>
+      </div>
+
+      {/* Psychic badge + timer — visible to everyone */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14, gap:8 }}>
+        <div style={{ fontSize:12, fontWeight:700, padding:"5px 12px", borderRadius:99,
+          background: isPsychic?"#fef3c7":"#ede9fe", color: isPsychic?"#92400e":"#4f46e5", flex:1, textAlign:"center" }}>
           {isPsychic ? "🧠 You're the Psychic" : `🧠 ${psychicPlayer?.name} is Psychic`}
         </div>
-        {room.phaseDeadline && (room.phase === PHASE.CLUE || room.phase === PHASE.GUESS) ? (
+        {room.phaseDeadline && (room.phase === PHASE.CLUE || room.phase === PHASE.GUESS) && (
           <Timer
             deadline={room.phaseDeadline}
             warning={15}
             onExpire={room.phase === PHASE.CLUE ? handleClueTimeout : handleGuessTimeout}
           />
-        ) : (
-          <span style={{ fontSize:12, color:"#94a3b8", fontFamily:"monospace", letterSpacing:1 }}>{roomCode}</span>
         )}
       </div>
 
