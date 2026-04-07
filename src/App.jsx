@@ -3,13 +3,16 @@ import { getFirestore, doc, setDoc, getDoc, updateDoc, arrayUnion } from "fireba
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const CLUE_PAIRS = [
-  ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
+    ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
   ["Cheap","Expensive"],["Boring","Exciting"],["Tiny","Massive"],["Dark","Bright"],
   ["Slow","Fast"],["Bad","Good"],["Ancient","Modern"],["Silent","Deafening"],
   ["Soft","Hard"],["Safe","Dangerous"],["Natural","Artificial"],["Common","Rare"],
   ["Serious","Funny"],["Realistic","Fantastical"],["Healthy","Unhealthy"],
   ["Abstract","Concrete"],["Dull","Vibrant"],["Fragile","Sturdy"],
   ["Pessimistic","Optimistic"],["Fictional","Real"],["Relaxing","Stressful"],
+  ["Useful Tech","Useless Tech"],["Sweet","Sour"],["Quiet","Loud"],
+  ["Clean","Dirty"],["Hero","Villain"],["Rough","Smooth"],["Short","Long"],
+  ["Wet","Dry"],["Inflexible","Flexible"]
 ];
 
 const ZONES = [
@@ -352,7 +355,7 @@ function Timer({ deadline, onExpire, warning = 10 }) {
   );
 }
 
-function Scoreboard({ players, highlight }) {
+function Scoreboard({ players, highlight, onKick }) {
   const sorted = [...players].sort((a,b) => b.score - a.score);
   return (
     <div style={{ background:"#f8fafc", borderRadius:12, border:"1px solid #e2e8f0", overflow:"hidden" }}>
@@ -374,6 +377,13 @@ function Scoreboard({ players, highlight }) {
               <span style={{ flex:1, fontSize:13, fontWeight: p.id===highlight?700:500, color:"#1e293b" }}>
                 {p.name}{p.id===highlight?" (you)":""}
               </span>
+              {onKick && p.id !== highlight && (
+                <button onClick={() => onKick(p.id)} style={{
+                  border:"none", background:"#fef2f2", color:"#dc2626",
+                  borderRadius:6, padding:"2px 7px", fontSize:10, fontWeight:700,
+                  cursor:"pointer", flexShrink:0
+                }}>✕</button>
+              )}
               <span style={{ fontSize:14, fontWeight:700, color:"#6366f1" }}>{p.score}</span>
             </div>
             <div style={{ marginLeft:28, height:4, background:"#e2e8f0", borderRadius:99, overflow:"hidden" }}>
@@ -414,11 +424,21 @@ export default function App() {
     if (!roomCode) return;
     try {
       const data = await loadRoom(roomCode);
-      if (data) setRoom(data);
+      if (data) {
+        // If this player was kicked, send them back to home
+        if (!data.players.find(p => p.id === myId)) {
+          setScreen("home");
+          setRoom(null);
+          setRoomCode("");
+          setError("You have been removed from the game.");
+          return;
+        }
+        setRoom(data);
+      }
     } catch(e) {
       console.error("Poll error:", e);
     }
-  }, [roomCode]);
+  }, [roomCode, myId]);
 
   useEffect(() => {
     if (screen === "room") {
@@ -727,6 +747,13 @@ export default function App() {
             <span style={{ flex:1, fontSize:14, color:"#1e293b" }}>{p.name}</span>
             {p.id === room.hostId && <span style={{ fontSize:10, fontWeight:700, color:"#6366f1", background:"#ede9fe", padding:"2px 7px", borderRadius:99 }}>HOST</span>}
             {p.id === myId && <span style={{ fontSize:11, color:"#94a3b8" }}>you</span>}
+            {isHost && p.id !== myId && (
+              <button onClick={() => kickPlayer(p.id)} style={{
+                border:"none", background:"#fef2f2", color:"#dc2626",
+                borderRadius:6, padding:"2px 8px", fontSize:11, fontWeight:700,
+                cursor:"pointer"
+              }}>Kick</button>
+            )}
           </div>
         ))}
       </div>
@@ -790,13 +817,57 @@ export default function App() {
   function handleClueTimeout() {
     if (clueTimedOut.current || !isPsychic || room.phase !== PHASE.CLUE) return;
     clueTimedOut.current = true;
-    const fallback = clueInput.trim() || "…";
+    const psychicName = room.players.find(p => p.id === room.psychicId)?.name || "Psychic";
+    const timeoutClue = `${psychicName} is too slow in giving a clue.`;
     loadRoom(roomCode).then(data => {
-      data.clue = fallback;
+      data.clue = timeoutClue;
       data.phase = PHASE.GUESS;
       data.phaseDeadline = Date.now() + 45000;
       return saveRoom(roomCode, data);
     }).then(() => poll()).catch(() => {});
+  }
+
+  async function kickPlayer(playerId) {
+    if (!isHost || playerId === myId) return;
+    try {
+      const data = await loadRoom(roomCode);
+      const kicked = data.players.find(p => p.id === playerId);
+      if (!kicked) return;
+
+      // Remove the player from the list
+      data.players = data.players.filter(p => p.id !== playerId);
+
+      // If the kicked player was the psychic, advance to next psychic
+      if (data.psychicId === playerId && data.players.length > 0) {
+        const idx = data.players.findIndex(p => p.id !== playerId);
+        data.psychicId = data.players[Math.max(0, idx) % data.players.length].id;
+        // If mid-guess phase, check if all remaining non-psychics have guessed
+        if (data.phase === PHASE.GUESS) {
+          const nonPsychic = data.players.filter(p => p.id !== data.psychicId);
+          if (nonPsychic.length > 0 && nonPsychic.every(p => data.guesses?.[p.id] !== undefined)) {
+            data.phase = PHASE.REVEAL;
+          }
+        }
+      }
+
+      // If mid-guess and kicked player was a guesser, check if everyone else done
+      if (data.phase === PHASE.GUESS) {
+        const nonPsychic = data.players.filter(p => p.id !== data.psychicId);
+        if (nonPsychic.length > 0 && nonPsychic.every(p => data.guesses?.[p.id] !== undefined)) {
+          data.phase = PHASE.REVEAL;
+        }
+      }
+
+      // Recalculate totalRounds based on new player count
+      if (data.phase !== PHASE.LOBBY && data.phase !== "winner") {
+        data.totalRounds = data.players.length * ROUNDS_PER_PLAYER;
+      }
+
+      await saveRoom(roomCode, data);
+      setRoom(data);
+    } catch(e) {
+      setError("Failed to kick player. Try again.");
+    }
   }
 
   function handleGuessTimeout() {
@@ -829,7 +900,7 @@ export default function App() {
       </div>
 
       <div style={{ marginBottom:14 }}>
-        <Scoreboard players={room.players} highlight={myId}/>
+        <Scoreboard players={room.players} highlight={myId} onKick={isHost ? kickPlayer : null}/>
       </div>
 
       <div style={{ background:"#fff", border:"1.5px solid #e2e8f0", borderRadius:16, padding:"14px 12px", marginBottom:14 }}>
