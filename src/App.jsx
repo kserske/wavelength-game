@@ -12,7 +12,10 @@ const CLUE_PAIRS = [
   ["Pessimistic","Optimistic"],["Fictional","Real"],["Relaxing","Stressful"],
   ["Useful Tech","Useless Tech"],["Sweet","Sour"],["Quiet","Loud"],
   ["Clean","Dirty"],["Hero","Villain"],["Rough","Smooth"],["Short","Long"],
-  ["Wet","Dry"],["Inflexible","Flexible"]
+  ["Wet","Dry"],["Inflexible","Flexible"],["Say More","Say Less"],
+  ["Useful Knowledge","Useless Knowledge"],["Useful Skill","Useless Skill"],
+  ["Better to Watch","Better to do"],["Day thing","Night thing"],["Indoor thing","Outdoor thing"],
+  ["Normal Person","Weirdo"],["Trashy Name","Classy Name"],
 ];
 
 const ZONES = [
@@ -28,7 +31,28 @@ const ROUNDS_PER_PLAYER = 3; // each player gets 3 turns as Psychic
 
 function randCode() { return Math.random().toString(36).slice(2,6).toUpperCase(); }
 function randTarget() { return parseFloat((Math.random()).toFixed(4)); }
-function randPair() { return CLUE_PAIRS[Math.floor(Math.random() * CLUE_PAIRS.length)]; }
+
+// Fisher-Yates shuffle — returns a new shuffled array
+function shufflePairs(arr) {
+  const a = arr.map((_, i) => i); // shuffle indices
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a.map(i => arr[i]);
+}
+
+// Pop the next pair from the queue stored in room data.
+// If queue is empty or missing, reshuffle all pairs (excluding current pair if any).
+function nextPairFromQueue(data) {
+  let queue = Array.isArray(data.pairQueue) && data.pairQueue.length > 0
+    ? data.pairQueue
+    : shufflePairs(CLUE_PAIRS);
+  const pair = queue[0];
+  data.pairQueue = queue.slice(1);
+  return pair;
+}
+
 function scoreGuess(target, guess) {
   const d = Math.abs(target - guess);
   if (d <= ZONES[0].half) return 4;
@@ -541,15 +565,17 @@ export default function App() {
     setError("");
     try {
       const data = await loadRoom(roomCode);
+      // Build a fresh shuffled queue for the whole game
+      data.pairQueue = shufflePairs(CLUE_PAIRS);
       data.phase = PHASE.CLUE;
       data.psychicId = data.players[0].id;
-      data.pair = randPair();
+      data.pair = nextPairFromQueue(data); // pops first item, updates data.pairQueue
       data.target = randTarget();
       data.clue = "";
       data.guesses = {};
       data.round = 1;
       data.totalRounds = data.players.length * ROUNDS_PER_PLAYER;
-      data.phaseDeadline = Date.now() + 90000; // 90s for psychic
+      data.phaseDeadline = Date.now() + 90000;
       await saveRoom(roomCode, data);
       setRoom(data);
     } catch(e) {
@@ -625,7 +651,7 @@ export default function App() {
       const idx = data.players.findIndex(p => p.id === data.psychicId);
       data.psychicId = data.players[(idx + 1) % data.players.length].id;
       data.phase = PHASE.CLUE;
-      data.pair = randPair();
+      data.pair = nextPairFromQueue(data); // pops from queue, reshuffles if empty
       data.target = randTarget();
       data.clue = "";
       data.guesses = {};
@@ -804,6 +830,7 @@ export default function App() {
               data.players.forEach(p=>p.score=0);
               data.guesses={}; data.clue=""; data.round=1;
               data.psychicId=null; data.winnerId=null; data.totalRounds=null;
+              data.pairQueue=[];
               await saveRoom(roomCode,data); setRoom(data);
             } catch(e) { setError("Failed to restart. Try again."); }
           }} style={{ ...btn(), marginTop:20 }}>Play Again</button>
