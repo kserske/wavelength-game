@@ -3,7 +3,7 @@ import { getFirestore, doc, setDoc, getDoc, updateDoc, arrayUnion } from "fireba
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const CLUE_PAIRS = [
-    ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
+  ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
   ["Cheap","Expensive"],["Boring","Exciting"],["Tiny","Massive"],["Dark","Bright"],
   ["Slow","Fast"],["Bad","Good"],["Ancient","Modern"],["Silent","Deafening"],
   ["Soft","Hard"],["Safe","Dangerous"],["Natural","Artificial"],["Common","Rare"],
@@ -15,7 +15,7 @@ const CLUE_PAIRS = [
   ["Wet","Dry"],["Inflexible","Flexible"],["Say More","Say Less"],
   ["Useful Knowledge","Useless Knowledge"],["Useful Skill","Useless Skill"],
   ["Better to Watch","Better to do"],["Day thing","Night thing"],["Indoor thing","Outdoor thing"],
-  ["Normal Person","Weirdo"],["Trashy Name","Classy Name"],
+  ["Normal Person","Weirdo"],["Trashy Name","Classy Name"]
 ];
 
 const ZONES = [
@@ -490,11 +490,12 @@ export default function App() {
         hostId: myId,
         psychicId: null,
         phase: PHASE.LOBBY,
-        pair: randPair(),
+        pair: CLUE_PAIRS[0], // placeholder — real pair set when game starts
         target: randTarget(),
         clue: "",
         guesses: {},
         round: 1,
+        pairQueue: [],
         players: [{ id: myId, name, score: 0 }],
         winnerId: null,
       };
