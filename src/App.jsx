@@ -3,19 +3,13 @@ import { getFirestore, doc, setDoc, getDoc, updateDoc, arrayUnion } from "fireba
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const CLUE_PAIRS = [
-  ["Cold","Hot"],["Ugly","Beautiful"],["Weak","Strong"],["Simple","Complex"],
-  ["Cheap","Expensive"],["Boring","Exciting"],["Tiny","Massive"],["Dark","Bright"],
-  ["Slow","Fast"],["Bad","Good"],["Ancient","Modern"],["Silent","Deafening"],
-  ["Soft","Hard"],["Safe","Dangerous"],["Natural","Artificial"],["Common","Rare"],
-  ["Serious","Funny"],["Realistic","Fantastical"],["Healthy","Unhealthy"],
-  ["Abstract","Concrete"],["Dull","Vibrant"],["Fragile","Sturdy"],
-  ["Pessimistic","Optimistic"],["Fictional","Real"],["Relaxing","Stressful"],
-  ["Useful Tech","Useless Tech"],["Sweet","Sour"],["Quiet","Loud"],
-  ["Clean","Dirty"],["Hero","Villain"],["Rough","Smooth"],["Short","Long"],
-  ["Wet","Dry"],["Inflexible","Flexible"],["Say More","Say Less"],
-  ["Useful Knowledge","Useless Knowledge"],["Useful Skill","Useless Skill"],
-  ["Better to Watch","Better to do"],["Day thing","Night thing"],["Indoor thing","Outdoor thing"],
-  ["Normal Person","Weirdo"],["Trashy Name","Classy Name"]
+  {a:"Cold",b:"Hot"},{a:"Ugly",b:"Beautiful"},{a:"Weak",b:"Strong"},{a:"Simple",b:"Complex"},
+  {a:"Cheap",b:"Expensive"},{a:"Boring",b:"Exciting"},{a:"Tiny",b:"Massive"},{a:"Dark",b:"Bright"},
+  {a:"Slow",b:"Fast"},{a:"Bad",b:"Good"},{a:"Ancient",b:"Modern"},{a:"Silent",b:"Deafening"},
+  {a:"Soft",b:"Hard"},{a:"Safe",b:"Dangerous"},{a:"Natural",b:"Artificial"},{a:"Common",b:"Rare"},
+  {a:"Serious",b:"Funny"},{a:"Realistic",b:"Fantastical"},{a:"Healthy",b:"Unhealthy"},
+  {a:"Abstract",b:"Concrete"},{a:"Dull",b:"Vibrant"},{a:"Fragile",b:"Sturdy"},
+  {a:"Pessimistic",b:"Optimistic"},{a:"Fictional",b:"Real"},{a:"Relaxing",b:"Stressful"},
 ];
 
 const ZONES = [
@@ -301,8 +295,8 @@ function Dial({ target, guess, showTarget, onGuessChange, interactive, pair, all
   return (
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, padding:"0 4px" }}>
-        <span style={{ fontSize:14, fontWeight:700, color:"#3b82f6" }}>{pair[0]}</span>
-        <span style={{ fontSize:14, fontWeight:700, color:"#f43f5e" }}>{pair[1]}</span>
+        <span style={{ fontSize:14, fontWeight:700, color:"#3b82f6" }}>{pair.a}</span>
+        <span style={{ fontSize:14, fontWeight:700, color:"#f43f5e" }}>{pair.b}</span>
       </div>
       <canvas ref={canvasRef} width={CW} height={CH}
         style={{ display:"block", width:"100%", cursor: interactive ? "crosshair" : "default", touchAction:"none" }}
@@ -945,11 +939,11 @@ export default function App() {
               <strong style={{ fontSize:14, color:"#065f46", minWidth:36 }}>{Math.round(room.target*100)}%</strong>
             </div>
             <div style={{ fontSize:11, color:"#78350f", marginTop:6 }}>
-              {room.target < 0.3 ? `Strongly toward "${room.pair[0]}"` :
-               room.target < 0.42 ? `Leaning toward "${room.pair[0]}"` :
+              {room.target < 0.3 ? `Strongly toward "${room.pair.a}"` :
+               room.target < 0.42 ? `Leaning toward "${room.pair.a}"` :
                room.target < 0.58 ? `Near the center` :
-               room.target < 0.7  ? `Leaning toward "${room.pair[1]}"` :
-               `Strongly toward "${room.pair[1]}"`}
+               room.target < 0.7  ? `Leaning toward "${room.pair.b}"` :
+               `Strongly toward "${room.pair.b}"`}
             </div>
           </div>
         )}
